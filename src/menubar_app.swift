@@ -68,7 +68,7 @@ enum History {
     }
 
     static func sample(feeds: Double, articles: Double, hc: Double?) {
-        var lines = (try? String(contentsOfFile: file, encoding: .utf8)) ?? ""
+        let lines = (try? String(contentsOfFile: file, encoding: .utf8)) ?? ""
         let cutoff = Date().addingTimeInterval(-8 * 86400).timeIntervalSince1970
         var kept: [String] = []
         for line in lines.split(separator: "\n") {
@@ -121,14 +121,61 @@ final class TrendView: NSView {
         let vmin = lo - pad, vmax = hi + pad
         let t1 = Date().timeIntervalSince1970
         let t0 = t1 - 7 * 86400   // 固定 7 天窗口
+        func xOf(_ t: Double) -> CGFloat {
+            chart.minX + chart.width * CGFloat(max(0, min(1, (t - t0) / (t1 - t0))))
+        }
         func pt(_ i: Int) -> NSPoint {
-            let x = chart.minX + chart.width * CGFloat(max(0, min(1, (samples[i].t.timeIntervalSince1970 - t0) / (t1 - t0))))
+            let x = xOf(samples[i].t.timeIntervalSince1970)
             let y = chart.minY + chart.height * CGFloat(max(0.02, min(0.98, (values[i] - vmin) / (vmax - vmin))))
             return NSPoint(x: x, y: y)
         }
+
+        // 小时级网格：每 6 小时细线，每天 0 点主线 + 底部日期标签
+        let cal = Calendar.current
+        var gridDayXs: [(CGFloat, String)] = []
+        let df = DateFormatter(); df.dateFormat = "MM/dd"
+        // 对齐到 t0 之后的第一个整点
+        var tick = t0 + (3600 - t0.truncatingRemainder(dividingBy: 3600))
+        while tick <= t1 {
+            let d = Date(timeIntervalSince1970: tick)
+            let h = cal.component(.hour, from: d)
+            let x = xOf(tick)
+            if h == 0 {
+                NSColor.separatorColor.withAlphaComponent(0.35).setStroke()
+                let major = NSBezierPath(rect: NSRect(x: x, y: chart.minY, width: 0.7, height: chart.height))
+                major.stroke()
+                if axisBottom { gridDayXs.append((x, df.string(from: d))) }
+            } else if h % 6 == 0 {
+                NSColor.separatorColor.withAlphaComponent(0.15).setStroke()
+                let minor = NSBezierPath(rect: NSRect(x: x, y: chart.minY, width: 0.5, height: chart.height))
+                minor.stroke()
+            }
+            tick += 3600
+        }
+
+        // 按小时分桶（桶内取均值）：7 天 = 最多 168 点，粒度到小时
+        var buckets: [(Date, Double)] = []
+        var curKey = -1.0
+        var acc: [Double] = []
+        for i in 0..<values.count {
+            let t = samples[i].t.timeIntervalSince1970
+            let key = floor(t / 3600)
+            if key != curKey {
+                if !acc.isEmpty { buckets.append((Date(timeIntervalSince1970: curKey * 3600 + 1800), acc.reduce(0, +) / Double(acc.count))) }
+                curKey = key; acc = []
+            }
+            acc.append(values[i])
+        }
+        if !acc.isEmpty { buckets.append((Date(timeIntervalSince1970: curKey * 3600 + 1800), acc.reduce(0, +) / Double(acc.count))) }
+        let pts: [NSPoint] = buckets.map { pair in
+            NSPoint(x: xOf(pair.0.timeIntervalSince1970),
+                    y: chart.minY + chart.height * CGFloat(max(0.02, min(0.98, (pair.1 - vmin) / (vmax - vmin)))))
+        }
+        guard pts.count >= 2 else { return }
+
         let line = NSBezierPath()
-        line.move(to: pt(0))
-        for i in 1..<values.count { line.line(to: pt(i)) }
+        line.move(to: pts[0])
+        for p in pts.dropFirst() { line.line(to: p) }
         line.lineWidth = 1.5; line.lineJoinStyle = .round
         color.setStroke(); line.stroke()
         let area = line.copy() as! NSBezierPath
@@ -137,6 +184,16 @@ final class TrendView: NSView {
         area.close()
         NSGradient(starting: color.withAlphaComponent(0.30), ending: color.withAlphaComponent(0.02))?
             .draw(in: area, angle: -90)
+
+        // 每日日期标签沿本行底部（仅末行画，避免重复）
+        if axisBottom {
+            let lAttrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 7), .foregroundColor: NSColor.tertiaryLabelColor]
+            for (x, label) in gridDayXs {
+                let size = (label as NSString).size(withAttributes: lAttrs)
+                let lx = min(max(chart.minX, x - size.width / 2), chart.maxX - size.width)
+                (label as NSString).draw(at: NSPoint(x: lx, y: rect.minY + 1), withAttributes: lAttrs)
+            }
+        }
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -148,12 +205,6 @@ final class TrendView: NSView {
                    name: "公众号", color: .controlAccentColor, values: feeds, sub: nil, axisBottom: false)
         drawSeries(NSRect(x: inner.minX, y: inner.minY, width: inner.width, height: rowH),
                    name: "文章", color: .systemOrange, values: articles, sub: articlesSub.isEmpty ? nil : articlesSub, axisBottom: true)
-        // 底部时间轴（整图一条）
-        let f = DateFormatter(); f.dateFormat = "MM/dd"
-        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 7), .foregroundColor: NSColor.tertiaryLabelColor]
-        (f.string(from: Date().addingTimeInterval(-7 * 86400)) as NSString)
-            .draw(at: NSPoint(x: inner.minX, y: inner.minY + 1), withAttributes: attrs)
-        ("今天" as NSString).draw(at: NSPoint(x: inner.maxX - 24, y: inner.minY + 1), withAttributes: attrs)
     }
 }
 
