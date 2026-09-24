@@ -27,12 +27,13 @@ rmdir "$LOCKD" 2>/dev/null
 rm -f "$GEN"
 echo "$(date '+%m-%d %H:%M:%S') rc=$RC out=${OUT_FULL:0:120}" >> "$LOGS/open_scan.log"
 
-if echo "$OUT" | grep -q "SCAN_PAGE_READY"; then
+if echo "$OUT_FULL" | grep -q "SCAN_PAGE_READY"; then
   open -a "ego lite" 2>/dev/null   # 把扫码窗口带到前台
   log "[open_scan] 扫码页已在前台"
 else
-  # 兜底：默认浏览器（会先到登录页；登录后请点左侧「微信读书」菜单进扫码页）
+  # 兜底：默认浏览器直达 /weread（未登录会自动跳登录页并带 redirect=参数，
+  # 登录成功后自动跳回本页——原仓库自带能力，无需改动）。ego 故障时才走此路。
   open "$WERSS_APP_URL/weread" 2>/dev/null
-  notify "请在浏览器登录后扫码" "登录账密：$WERSS_ADMIN_USER / $WERSS_ADMIN_PASS；登录后点左侧菜单「微信读书」进扫码页"
-  log "[open_scan] ego 失败，已用默认浏览器兜底"
+  notify "请两步完成扫码" "第1步 登录（账密 $WERSS_ADMIN_USER / $WERSS_ADMIN_PASS），登录后自动跳回本页；第2步 点页面「扫码授权」出二维码"
+  log "[open_scan] ego 失败，已用默认浏览器兜底（两步指引已推送）"
 fi
