@@ -135,6 +135,8 @@ fi
 # ---- 6. 完成 ----
 step "6/6 完成"
 bash "$WERSS_ROOT/bin/status.sh" || true
+# 打开菜单栏应用（常驻状态图标；launchd 已保活）
+open "$WERSS_ROOT/WERSS菜单栏.app" 2>/dev/null && echo "菜单栏应用已打开（右上角 werss 图标）"
 # 新装机立即对齐最新 Release（zip 可能落后于 GitHub 上的版本；零配置）
 bash "$WERSS_ROOT/bin/update.sh" 2>&1 | tail -2 || true
 echo
