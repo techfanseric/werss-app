@@ -166,7 +166,8 @@ final class StatusRowView: NSView {
     init(text: String) {
         label = NSTextField(labelWithString: text)
         label.font = NSFont.systemFont(ofSize: 12)
-        label.textColor = .labelColor
+        // 对齐菜单文字行的视觉细节：次级灰 + 与文字行相同的 14pt 左内边距
+        label.textColor = .secondaryLabelColor
         label.lineBreakMode = .byClipping
         let icon = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "刷新")?
             .withSymbolConfiguration(.init(pointSize: 11, weight: .medium)) ?? NSImage()
@@ -187,9 +188,9 @@ final class StatusRowView: NSView {
     override func layout() {
         super.layout()
         label.sizeToFit()
-        label.frame.origin = NSPoint(x: 0, y: (frame.height - label.frame.height) / 2)
+        label.frame.origin = NSPoint(x: 14, y: (frame.height - label.frame.height) / 2)
         button.frame.size = NSSize(width: 18, height: 16)
-        button.frame.origin = NSPoint(x: frame.width - 20, y: (frame.height - 16) / 2)
+        button.frame.origin = NSPoint(x: frame.width - 14 - 18, y: (frame.height - 16) / 2)
     }
 
     @objc private func clickRefresh() {
