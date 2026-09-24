@@ -157,30 +157,36 @@ final class TrendView: NSView {
     }
 }
 
-// 状态行：左侧文字 + 右侧刷新图标按钮（点击即重新拉取状态）
+// 状态行：左侧文字 [+ 右侧刷新图标按钮]。三行状态统一用本视图渲染，保证字体/颜色/边距完全一致
 final class StatusRowView: NSView {
     var onRefresh: (() -> Void)?
     private let label: NSTextField
-    private let button: NSButton
+    private let button: NSButton?
 
-    init(text: String) {
+    init(text: String, showRefresh: Bool = false) {
         label = NSTextField(labelWithString: text)
         label.font = NSFont.systemFont(ofSize: 12)
-        // 对齐菜单文字行的视觉细节：次级灰 + 与文字行相同的 14pt 左内边距
         label.textColor = .secondaryLabelColor
         label.lineBreakMode = .byClipping
-        let icon = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "刷新")?
-            .withSymbolConfiguration(.init(pointSize: 11, weight: .medium)) ?? NSImage()
-        button = NSButton(image: icon, target: nil, action: nil)
-        button.isBordered = false
-        button.imagePosition = .imageOnly
-        button.contentTintColor = .secondaryLabelColor
-        button.toolTip = "刷新状态"
+        var b: NSButton? = nil
+        if showRefresh {
+            let icon = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "刷新")?
+                .withSymbolConfiguration(.init(pointSize: 11, weight: .medium)) ?? NSImage()
+            let btn = NSButton(image: icon, target: nil, action: nil)
+            btn.isBordered = false
+            btn.imagePosition = .imageOnly
+            btn.contentTintColor = .secondaryLabelColor
+            btn.toolTip = "刷新状态"
+            b = btn
+        }
+        button = b
         super.init(frame: NSRect(x: 0, y: 0, width: 340, height: 18))
         addSubview(label)
-        addSubview(button)
-        button.target = self
-        button.action = #selector(clickRefresh)
+        if let button = button {
+            addSubview(button)
+            button.target = self
+            button.action = #selector(clickRefresh)
+        }
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -189,15 +195,15 @@ final class StatusRowView: NSView {
         super.layout()
         label.sizeToFit()
         label.frame.origin = NSPoint(x: 14, y: (frame.height - label.frame.height) / 2)
-        button.frame.size = NSSize(width: 18, height: 16)
-        button.frame.origin = NSPoint(x: frame.width - 14 - 18, y: (frame.height - 16) / 2)
+        button?.frame.size = NSSize(width: 18, height: 16)
+        button?.frame.origin = NSPoint(x: frame.width - 14 - 18, y: (frame.height - 16) / 2)
     }
 
     @objc private func clickRefresh() {
-        button.contentTintColor = .controlAccentColor
+        button?.contentTintColor = .controlAccentColor
         onRefresh?()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
-            self?.button.contentTintColor = .secondaryLabelColor
+            self?.button?.contentTintColor = .secondaryLabelColor
         }
     }
 }
@@ -353,18 +359,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func rebuildMenu() {
         menu.removeAllItems()
-        menu.font = NSFont.systemFont(ofSize: 12)
+        // 三行状态统一用 StatusRowView 渲染（字体/颜色/边距完全一致）；行1 右侧带刷新按钮
         let d = st.dict
-        // 行1 组件健康（右侧内嵌刷新图标按钮）
-        let row1 = StatusRowView(text: "Docker \(d["docker"] ?? "?") · 容器 \(d["container"] ?? "?") · 应用 \(d["app"] ?? "?") · ego \(d["ego"] ?? "?")")
-        row1.onRefresh = { [weak self] in self?.refreshNow() }
-        row1.frame = NSRect(x: 0, y: 0, width: 340, height: 18)
-        let row1Item = NSMenuItem()
-        row1Item.view = row1
-        menu.addItem(row1Item)
-        menu.addItem(mkItem("runner \(d["runner"] ?? "?") · 待采 \(d["slice"] ?? "?") 家 · 磁盘 \(d["disk_gb"] ?? "?")G · 备份 \(d["backup_days"] ?? "?")天前"))
+        func addStatusRow(_ text: String, refresh: Bool = false) {
+            let row = StatusRowView(text: text, showRefresh: refresh)
+            if refresh { row.onRefresh = { [weak self] in self?.refreshNow() } }
+            row.frame = NSRect(x: 0, y: 0, width: 340, height: 18)
+            let item = NSMenuItem()
+            item.view = row
+            menu.addItem(item)
+        }
+        addStatusRow("Docker \(d["docker"] ?? "?") · 容器 \(d["container"] ?? "?") · 应用 \(d["app"] ?? "?") · ego \(d["ego"] ?? "?")", refresh: true)
+        addStatusRow("runner \(d["runner"] ?? "?") · 待采 \(d["slice"] ?? "?") 家 · 磁盘 \(d["disk_gb"] ?? "?")G · 备份 \(d["backup_days"] ?? "?")天前")
         // 订阅/文章当前值由趋势图头行展示，不再重复列文字行
-        menu.addItem(mkItem("微信读书授权 \(d["weread"] == "OK" ? "正常" : (d["weread"] == "FAIL" ? "失效待扫码" : (d["weread"] ?? "?"))) · 限流 \(d["throttled"] == "yes" ? "冷却中" : "无")"))
+        addStatusRow("微信读书授权 \(d["weread"] == "OK" ? "正常" : (d["weread"] == "FAIL" ? "失效待扫码" : (d["weread"] ?? "?"))) · 限流 \(d["throttled"] == "yes" ? "冷却中" : "无")")
 
         // 7 天趋势（公众号 / 文章双曲线）
         let trendItem = NSMenuItem()
