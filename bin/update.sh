@@ -58,5 +58,5 @@ compose up -d || true
 pkill -f "bash run_forever.sh" 2>/dev/null; pkill -f "python3 .*process_chunk.py" 2>/dev/null; sleep 2
 start_runner
 
-alert_notify "werss 已自动更新" "$LOCAL_V → $TAG（代码备份于 backups/，数据未动）" "" ""
+notify "已自动更新" "$LOCAL_V → $TAG（代码备份于 backups/，数据未动）"
 log "[update] 完成 $LOCAL_V → $TAG"

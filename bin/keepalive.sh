@@ -25,7 +25,7 @@ if ! docker_ok; then
   if ensure_docker; then
     log "[keepalive] Docker 已恢复"
   else
-    alert_notify "werss 保活失败" "Docker Desktop 软/硬恢复均失败，需人工检查" "" ""
+    notify_important docker "Docker 未恢复" "Docker Desktop 软/硬恢复均失败，需人工检查"
     echo $(( FAILS + 1 )) > "$STATE"; exit 1
   fi
 fi
@@ -38,7 +38,7 @@ if ! container_up; then
   if wait_app 300; then
     log "[keepalive] 容器已恢复"
   else
-    alert_notify "werss 保活失败" "容器已启动但应用 5 分钟未就绪，请看 docker logs $WERSS_CONTAINER" "" ""
+    notify_important app "应用未就绪" "容器已启动但 5 分钟未就绪，请看 docker logs $WERSS_CONTAINER"
     docker logs --tail 30 "$WERSS_CONTAINER" >> "$LOGS/keepalive.log" 2>&1
     echo $(( FAILS + 1 )) > "$STATE"; exit 1
   fi
@@ -59,20 +59,7 @@ else
   log "[keepalive] 无剩余任务，runner 保持停止"
 fi
 
-# ---- 4. 快检：weread 授权 ----
-alert_weread() {
-  alert_notify "需要扫码：微信读书授权失效" \
-"文章正文采集已暂停（账号添加不受影响）。
-页面如需登录，账密：$WERSS_ADMIN_USER / $WERSS_ADMIN_PASS
-二维码截图已存 batch/qr_need_scan.png" \
-    "打开扫码页" "$WERSS_APP_URL/weread"
-  sed -e "s|__W__|$BATCH|g" -e "s|__APP_URL__|$WERSS_APP_URL|g" \
-      -e "s|__ADMIN_USER__|$WERSS_ADMIN_USER|g" -e "s|__ADMIN_PASS__|$WERSS_ADMIN_PASS|g" \
-      "$BATCH/login_alert.js.template" > "$BATCH/login_alert.gen.js"
-  with_timeout 90 ego-browser nodejs < "$BATCH/login_alert.gen.js" >/dev/null 2>&1
-  return 0
-}
-
+# ---- 4. 快检：weread 授权（状态刚失效时自动打开一次扫码页，之后只提醒）----
 if app_alive; then
   TOK=$(curl -s -m 10 -X POST "$WERSS_APP_URL/api/v1/wx/auth/login" \
       -H 'Content-Type: application/x-www-form-urlencoded' \
@@ -81,11 +68,16 @@ if app_alive; then
   if [ -n "$TOK" ]; then
     WR=$(curl -s -m 10 -X POST "$WERSS_APP_URL/api/v1/wx/weread/test" -H "Authorization: Bearer $TOK" 2>/dev/null)
     if ! echo "$WR" | grep -qiE 'true|有效|success|"code":200'; then
-      log "[keepalive] weread 授权疑似失效，触发扫码提醒"
-      alert_weread
+      log "[keepalive] weread 授权疑似失效，提醒扫码"
+      notify_important weread "微信读书授权失效，请扫码" \
+        "文章正文采集暂停（账号添加不受影响）。页面如需登录：$WERSS_ADMIN_USER / $WERSS_ADMIN_PASS" \
+        "$WERSS_APP_URL/weread"
+    else
+      alert_clear weread
     fi
   else
     log "[keepalive] 管理端登录失败（检查 config.env 凭据）"
+    notify_important login "管理端登录失败" "请检查 config.env 的 WERSS_ADMIN_USER / WERSS_ADMIN_PASS"
   fi
 else
   log "[keepalive] 应用未响应（容器标记 Up 但 HTTP 不通）"
@@ -105,7 +97,7 @@ if [ $ok -eq 1 ]; then
 else
   FAILS=$(( FAILS + 1 )); echo "$FAILS" > "$STATE"
   if [ "$FAILS" -ge 3 ]; then
-    alert_notify "werss 连续 ${FAILS} 次异常" "自动恢复失败，需要人工介入（详见 logs/ 与 batch/runner.log）" "" ""
+    notify_important fails3 "连续 ${FAILS} 次异常" "自动恢复失败，需要人工介入（详见 logs/ 与 batch/runner.log）"
   fi
   exit 1
 fi

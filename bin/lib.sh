@@ -30,22 +30,29 @@ with_timeout() {
   perl -e 'alarm shift; exec @ARGV' "$secs" "$@"
 }
 
-# macOS 系统通知（横幅，约5秒自动收起）：notify "标题" "正文"
+# macOS 横幅通知（右上角，不抢焦点，约5秒收起进通知中心）：
+#   notify "标题" "正文"
+# 注：想横幅不自动收起，把 系统设置→通知→Script Editor 的样式设为「提醒」(Alerts) 即可
 notify() {
   osascript -e "display notification \"${2:-}\" with title \"werss\" subtitle \"${1:-}\" sound name \"Glass\"" >/dev/null 2>&1 || true
 }
 
-# 持久提醒（模态对话框，不自动消失，用户必须点按钮）：
-#   alert_notify "标题" "正文" ["动作按钮文字"] ["动作URL"]
-# 分离进程执行，不阻塞调用方；已有提醒框未处理时不叠加（降级为横幅）
-alert_notify() {
-  if pgrep -f "bin/alert\.sh" >/dev/null 2>&1; then
-    notify "$1" "$2"
-    return
+# 需要人介入的提醒：响更明显的声音；**状态刚变为异常时**执行一次性动作（如打开扫码页），
+# 之后每轮保活只发横幅不重复动作（横幅无按钮，也避免反复抢焦点）。
+#   notify_important "状态键" "标题" "正文" ["一次性打开的URL"]
+notify_important() {
+  local key="$1" title="$2" body="$3" url="${4:-}"
+  local f="$LOGS/.alert-state-$key" prev
+  prev=$(cat "$f" 2>/dev/null || echo ok)
+  osascript -e "display notification \"${body:-}\" with title \"werss 需要处理\" subtitle \"${title:-}\" sound name \"Sosumi\"" >/dev/null 2>&1 || true
+  if [ "$prev" != "fail" ] && [ -n "$url" ]; then
+    open "$url" 2>/dev/null
   fi
-  nohup bash "$WERSS_ROOT/bin/alert.sh" "$1" "$2" "${3:-}" "${4:-}" >/dev/null 2>&1 < /dev/null &
-  return
+  echo fail > "$f"
 }
+
+# 异常恢复后清除状态（下次再出问题会重新触发一次性动作）
+alert_clear() { rm -f "$LOGS/.alert-state-$1" 2>/dev/null; }
 
 # 所有 docker 调用加超时：引擎半卡死时 CLI 可能无限挂起，不能拖死保活
 docker_ok() { with_timeout 30 docker info >/dev/null 2>&1; }
@@ -130,7 +137,7 @@ ensure_docker() {
 ensure_stack() {
   # 1. Docker 守护进程（软→硬恢复）
   if ! ensure_docker; then
-    alert_notify "werss 保活失败" "Docker Desktop 软/硬恢复均失败，需人工检查" "" ""
+    notify_important docker "Docker 未恢复" "Docker Desktop 软/硬恢复均失败，需人工检查"
     return 1
   fi
   # 2. 容器
@@ -138,7 +145,7 @@ ensure_stack() {
     log "[容器] 未运行，compose up…"
     compose up -d || return 1
     log "[容器] 等待应用就绪（首次初始化约 2 分钟）…"
-    wait_app 300 || { alert_notify "应用未就绪" "容器已启动但 5 分钟内 HTTP 未恢复，查看 docker logs $WERSS_CONTAINER"; return 1; }
+    wait_app 300 || { notify_important app "应用未就绪" "容器已启动但 5 分钟内 HTTP 未恢复，查看 docker logs $WERSS_CONTAINER"; return 1; }
   fi
   # 3. runner
   start_runner

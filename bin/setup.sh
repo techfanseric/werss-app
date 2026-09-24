@@ -50,7 +50,7 @@ if ! docker_ok; then
   echo "启动 Docker Desktop（首次启动若弹出协议/密码窗口请完成它）…"
   open -a Docker
   i=0; until docker_ok || [ $i -ge 40 ]; do sleep 15; i=$((i+1)); echo "  等待 Docker 引擎… ($((i*15))s)"; done
-  docker_ok && echo "Docker 就绪 ✓" || { alert_notify "安装受阻" "Docker 引擎 10 分钟未就绪，请完成 Docker 首次启动设置后重新双击 安装.command"; exit 1; }
+  docker_ok && echo "Docker 就绪 ✓" || { notify_important install "安装受阻" "Docker 引擎 10 分钟未就绪，请完成 Docker 首次启动设置后重新双击 安装.command"; exit 1; }
 else
   echo "Docker 运行中 ✓"
 fi
@@ -72,7 +72,7 @@ if ! command -v ego-browser >/dev/null 2>&1; then
   echo
   open -a "ego lite" 2>/dev/null
   i=0; until command -v ego-browser >/dev/null 2>&1 || [ $i -ge 40 ]; do sleep 15; i=$((i+1)); echo "  等待 onboarding 完成… ($((i*15))s)"; done
-  command -v ego-browser >/dev/null 2>&1 && echo "ego-browser 命令就绪 ✓" || { alert_notify "安装受阻" "ego lite onboarding 未完成，完成后重新双击 安装.command"; exit 1; }
+  command -v ego-browser >/dev/null 2>&1 && echo "ego-browser 命令就绪 ✓" || { notify_important install "安装受阻" "ego lite onboarding 未完成，完成后重新双击 安装.command"; exit 1; }
 else
   echo "ego-browser 命令就绪 ✓"
 fi
@@ -83,7 +83,7 @@ if [ -f "$WERSS_ROOT/backups/werss-image.tar.gz" ]; then
   echo "检测到离线镜像包，直接本地导入…"
   docker load < "$WERSS_ROOT/backups/werss-image.tar.gz" && echo "镜像导入 ✓"
 else
-  docker pull "$WERSS_IMAGE" && echo "镜像就绪 ✓" || { alert_notify "安装受阻：镜像拉取失败" "请检查网络后重跑 安装.command"; exit 1; }
+  docker pull "$WERSS_IMAGE" && echo "镜像就绪 ✓" || { notify_important install "安装受阻：镜像拉取失败" "请检查网络后重跑 安装.command"; exit 1; }
 fi
 
 # ---- 4. 开机自启 + 30 分钟保活 ----

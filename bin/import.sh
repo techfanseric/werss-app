@@ -61,7 +61,7 @@ rm -rf "$BATCH"/browser.lock.d 2>/dev/null
 log "[import] 启动容器（初始化约 2 分钟）…"
 compose up -d
 if ! wait_app 600; then
-  alert_notify "导入后启动失败" "容器已启动但应用 10 分钟未就绪，请看 docker logs $WERSS_CONTAINER"
+  notify_important app "导入后启动失败" "容器已启动但应用 10 分钟未就绪，请看 docker logs $WERSS_CONTAINER"
   log "[import] 应用未就绪，请人工检查"; exit 1
 fi
 
