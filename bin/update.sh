@@ -1,0 +1,62 @@
+#!/bin/bash
+# 自更新：检查 GitHub 最新 Release → 对比 VERSION → 下载 tarball 覆盖代码文件
+#       → 重装 launchd → 容器配置有变则重建 → 用新代码重启 runner。
+# 数据安全：data/、companies.csv、config.env、batch 运行态（队列/日志/进度）永不被覆盖；
+#           更新前自动把当前代码备份到 backups/code-pre-update-*.tar.gz。
+# 用法: update.sh [--check]   --check 只报告新版本，不更新
+. "$(cd "$(dirname "$0")" && pwd)/lib.sh"
+
+REPO="${WERSS_GITHUB_REPO:-}"
+if [ -z "$REPO" ]; then
+  echo "[update] config.env 未设置 WERSS_GITHUB_REPO，跳过"
+  exit 0
+fi
+
+LOCAL_V="v$(cat "$WERSS_ROOT/VERSION" 2>/dev/null || echo 0)"
+REL=$(with_timeout 30 curl -sf -m 20 "https://api.github.com/repos/$REPO/releases/latest") || {
+  echo "[update] 无法访问 github.com/$REPO（未发布 release 或网络问题），跳过"; exit 0
+}
+TAG=$(printf '%s' "$REL" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null)
+TARBALL=$(printf '%s' "$REL" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("tarball_url",""))' 2>/dev/null)
+[ -n "$TAG" ] || { echo "[update] 仓库无 release，跳过"; exit 0; }
+
+# 归一化比较（v 前缀可有可无）
+if [ "${TAG#v}" = "${LOCAL_V#v}" ]; then
+  echo "[update] 已是最新 ($LOCAL_V)"
+  exit 0
+fi
+if [ "${1:-}" = "--check" ]; then
+  echo "[update] 有新版本: $LOCAL_V → $TAG（去掉 --check 执行更新）"
+  exit 0
+fi
+
+log "[update] 开始更新 $LOCAL_V → $TAG"
+
+# 1. 备份当前代码
+BK="$WERSS_ROOT/backups/code-pre-update-$(date +%Y%m%d-%H%M%S).tar.gz"
+tar -czf "$BK" -C "$WERSS_ROOT" \
+    bin batch/*.sh batch/*.py batch/*.js batch/*.template batch/canary_pool.json \
+    launchd docker-compose.yml VERSION README.md *.command 2>/dev/null \
+  || tar -czf "$BK" -C "$WERSS_ROOT" bin launchd docker-compose.yml VERSION README.md
+log "[update] 代码已备份: $BK"
+
+# 2. 下载并解包（GitHub tarball 只含 git 跟踪文件，天然不会碰 data/config.env/运行态）
+STAGE=$(mktemp -d /tmp/werss-update.XXXX)
+with_timeout 300 curl -sfL -m 280 "$TARBALL" -o "$STAGE/src.tar.gz" || {
+  log "[update] 下载失败，放弃（系统保持原样）"; rm -rf "$STAGE"; exit 1; }
+mkdir -p "$STAGE/src" && tar -xzf "$STAGE/src.tar.gz" -C "$STAGE/src" --strip-components=1
+
+# 3. 覆盖代码（tar 解包覆盖，不删除本地多出的文件——队列/日志/数据安全）
+( cd "$STAGE/src" && tar cf - . ) | ( cd "$WERSS_ROOT" && tar xf - )
+rm -rf "$STAGE"
+
+# 4. 生效：launchd 模板可能有变 → 重装；compose 定义可能有变 → up -d 幂等重建；
+#    runner 换新代码 → 重启
+chmod +x "$WERSS_ROOT"/bin/*.sh "$WERSS_ROOT"/batch/*.sh "$WERSS_ROOT"/batch/*.py "$WERSS_ROOT"/*.command 2>/dev/null
+bash "$WERSS_ROOT/bin/install_launchd.sh" || true
+compose up -d || true
+pkill -f "bash run_forever.sh" 2>/dev/null; pkill -f "python3 .*process_chunk.py" 2>/dev/null; sleep 2
+start_runner
+
+alert_notify "werss 已自动更新" "$LOCAL_V → $TAG（代码备份于 backups/，数据未动）" "" ""
+log "[update] 完成 $LOCAL_V → $TAG"

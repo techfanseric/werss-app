@@ -19,15 +19,13 @@ STATE="$LOGS/keepalive_fails"
 FAILS=$(cat "$STATE" 2>/dev/null || echo 0)
 ok=1
 
-# ---- 1. Docker 守护进程 ----
+# ---- 1. Docker 守护进程（软→硬恢复，见 lib.sh:ensure_docker）----
 if ! docker_ok; then
-  log "[keepalive] Docker 守护进程未就绪，启动 Docker Desktop…"
-  open -a Docker 2>/dev/null
-  i=0; until docker_ok || [ $i -ge 20 ]; do sleep 15; i=$((i+1)); done
-  if docker_ok; then
+  log "[keepalive] Docker 守护进程未就绪，尝试恢复…"
+  if ensure_docker; then
     log "[keepalive] Docker 已恢复"
   else
-    notify "werss 保活失败" "Docker Desktop 5 分钟未恢复，需人工检查"
+    alert_notify "werss 保活失败" "Docker Desktop 软/硬恢复均失败，需人工检查" "" ""
     echo $(( FAILS + 1 )) > "$STATE"; exit 1
   fi
 fi
@@ -40,7 +38,7 @@ if ! container_up; then
   if wait_app 300; then
     log "[keepalive] 容器已恢复"
   else
-    notify "werss 保活失败" "容器已启动但应用 5 分钟未就绪，请看 docker logs $WERSS_CONTAINER"
+    alert_notify "werss 保活失败" "容器已启动但应用 5 分钟未就绪，请看 docker logs $WERSS_CONTAINER" "" ""
     docker logs --tail 30 "$WERSS_CONTAINER" >> "$LOGS/keepalive.log" 2>&1
     echo $(( FAILS + 1 )) > "$STATE"; exit 1
   fi
@@ -63,12 +61,16 @@ fi
 
 # ---- 4. 快检：weread 授权 ----
 alert_weread() {
-  notify "需要扫码：微信读书授权失效" "文章正文采集已暂停，请扫码恢复；二维码已保存/页面已打开"
+  alert_notify "需要扫码：微信读书授权失效" \
+"文章正文采集已暂停（账号添加不受影响）。
+页面如需登录，账密：$WERSS_ADMIN_USER / $WERSS_ADMIN_PASS
+二维码截图已存 batch/qr_need_scan.png" \
+    "打开扫码页" "$WERSS_APP_URL/weread"
   sed -e "s|__W__|$BATCH|g" -e "s|__APP_URL__|$WERSS_APP_URL|g" \
       -e "s|__ADMIN_USER__|$WERSS_ADMIN_USER|g" -e "s|__ADMIN_PASS__|$WERSS_ADMIN_PASS|g" \
       "$BATCH/login_alert.js.template" > "$BATCH/login_alert.gen.js"
   with_timeout 90 ego-browser nodejs < "$BATCH/login_alert.gen.js" >/dev/null 2>&1
-  open "$WERSS_APP_URL/weread" 2>/dev/null
+  return 0
 }
 
 if app_alive; then
@@ -90,14 +92,20 @@ else
   ok=0
 fi
 
-# ---- 5. 汇总 ----
+# ---- 5. 每日一次自动更新检查（GitHub Release，见 bin/update.sh）----
+if [ "$(date +%F)" != "$(cat "$LOGS/.last-update-check" 2>/dev/null)" ]; then
+  date +%F > "$LOGS/.last-update-check"
+  bash "$WERSS_ROOT/bin/update.sh" >> "$LOGS/update.log" 2>&1 || true
+fi
+
+# ---- 6. 汇总 ----
 if [ $ok -eq 1 ]; then
   echo 0 > "$STATE"
   echo "$(date '+%m-%d %H:%M:%S') [keepalive] 正常 docker:OK 容器:UP app:OK runner:$(runner_alive && echo UP || echo 停) slice剩余:$(slice_remaining)"
 else
   FAILS=$(( FAILS + 1 )); echo "$FAILS" > "$STATE"
   if [ "$FAILS" -ge 3 ]; then
-    notify "werss 连续 ${FAILS} 次异常" "自动恢复失败，需要人工介入（详见 logs/keepalive 相关日志）"
+    alert_notify "werss 连续 ${FAILS} 次异常" "自动恢复失败，需要人工介入（详见 logs/ 与 batch/runner.log）" "" ""
   fi
   exit 1
 fi

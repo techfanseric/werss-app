@@ -17,3 +17,4 @@ batch/*
 *.gen.js
 *.tar.gz
 __pycache__/
+config.env

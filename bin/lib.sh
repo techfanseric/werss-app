@@ -6,9 +6,11 @@
 WERSS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export WERSS_ROOT
 
-# 读取配置（不覆盖已导出的值，便于演练时用环境变量临时覆盖容器名等）
+# 读取配置：先加载模板默认值，再用本机 config.env 覆盖（两处均用 ${VAR:-默认}，
+# 因此环境变量临时覆盖依然生效；config.env 缺失时仅用模板也能跑）
 set -a
-. "$WERSS_ROOT/config.env"
+. "$WERSS_ROOT/config.example.env"
+[ -f "$WERSS_ROOT/config.env" ] && . "$WERSS_ROOT/config.env"
 set +a
 
 # PATH 补全：launchd 代理环境只有 /usr/bin:/bin:/usr/sbin:/sbin，
@@ -28,9 +30,21 @@ with_timeout() {
   perl -e 'alarm shift; exec @ARGV' "$secs" "$@"
 }
 
-# macOS 系统通知：notify "标题" "正文"
+# macOS 系统通知（横幅，约5秒自动收起）：notify "标题" "正文"
 notify() {
   osascript -e "display notification \"${2:-}\" with title \"werss\" subtitle \"${1:-}\" sound name \"Glass\"" >/dev/null 2>&1 || true
+}
+
+# 持久提醒（模态对话框，不自动消失，用户必须点按钮）：
+#   alert_notify "标题" "正文" ["动作按钮文字"] ["动作URL"]
+# 分离进程执行，不阻塞调用方；已有提醒框未处理时不叠加（降级为横幅）
+alert_notify() {
+  if pgrep -f "bin/alert\.sh" >/dev/null 2>&1; then
+    notify "$1" "$2"
+    return
+  fi
+  nohup bash "$WERSS_ROOT/bin/alert.sh" "$1" "$2" "${3:-}" "${4:-}" >/dev/null 2>&1 < /dev/null &
+  return
 }
 
 # 所有 docker 调用加超时：引擎半卡死时 CLI 可能无限挂起，不能拖死保活
@@ -90,22 +104,41 @@ compose() {
   with_timeout 300 docker compose --env-file "$WERSS_ROOT/config.env" -f "$WERSS_ROOT/docker-compose.yml" "$@"
 }
 
+# Docker 守护进程保活：软恢复(open)无效说明引擎卡死，升级硬恢复(退出重开 Docker Desktop)。
+# 今天实测引擎会半卡死（进程在、socket 无响应、docker info 挂起），只能退出重开救回。
+ensure_docker() {
+  docker_ok && return 0
+  log "[docker] 守护进程未就绪，软恢复: open -a Docker…"
+  open -a Docker 2>/dev/null
+  local i=0
+  until docker_ok || [ $i -ge 12 ]; do sleep 10; i=$((i+1)); done
+  docker_ok && { log "[docker] 软恢复成功"; return 0; }
+  log "[docker] 软恢复无效（引擎卡死），硬恢复: 退出并重开 Docker Desktop…"
+  osascript -e 'quit app "Docker"' 2>/dev/null
+  sleep 8
+  i=0
+  while pgrep -f com.docker.backend >/dev/null 2>&1 && [ $i -lt 24 ]; do sleep 5; i=$((i+1)); done
+  pkill -f com.docker.backend 2>/dev/null; sleep 3
+  open -a Docker 2>/dev/null
+  i=0
+  until docker_ok || [ $i -ge 30 ]; do sleep 10; i=$((i+1)); done
+  docker_ok && { log "[docker] 硬恢复成功"; return 0; }
+  return 1
+}
+
 # 统一启动：Docker → 容器 → 等健康 → runner
 ensure_stack() {
-  # 1. Docker 守护进程
-  if ! docker_ok; then
-    log "[docker] 守护进程未就绪，启动 Docker Desktop…"
-    open -a Docker 2>/dev/null || { notify "启动失败" "未找到 Docker Desktop，请先运行 安装.command"; return 1; }
-    local i=0
-    until docker_ok || [ $i -ge 20 ]; do sleep 15; i=$((i+1)); done
-    docker_ok || { notify "Docker 未恢复" "等待 5 分钟仍未就绪，需人工检查"; return 1; }
+  # 1. Docker 守护进程（软→硬恢复）
+  if ! ensure_docker; then
+    alert_notify "werss 保活失败" "Docker Desktop 软/硬恢复均失败，需人工检查" "" ""
+    return 1
   fi
   # 2. 容器
   if ! container_up; then
     log "[容器] 未运行，compose up…"
     compose up -d || return 1
     log "[容器] 等待应用就绪（首次初始化约 2 分钟）…"
-    wait_app 300 || { notify "应用未就绪" "容器已启动但 5 分钟内 HTTP 未恢复，查看 docker logs $WERSS_CONTAINER"; return 1; }
+    wait_app 300 || { alert_notify "应用未就绪" "容器已启动但 5 分钟内 HTTP 未恢复，查看 docker logs $WERSS_CONTAINER"; return 1; }
   fi
   # 3. runner
   start_runner

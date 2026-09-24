@@ -74,7 +74,7 @@ fi
 # ---- 4. 恢复运行 ----
 log "[export] 恢复容器与 runner…"
 compose up -d
-wait_app 300 || notify "导出后恢复失败" "容器已启动但应用未就绪，请检查"
+wait_app 300 || alert_notify "导出后恢复失败" "容器已启动但应用未就绪，请检查"
 start_runner
 
 MANIFEST=$(tar -xzOf "$OUT" manifest.json 2>/dev/null | python3 -c "import sys,json;m=json.load(sys.stdin);print(f\"订阅{m.get('feeds','?')} 文章{m.get('articles','?')} 待采{m.get('slice_remaining','?')}\")" 2>/dev/null)
