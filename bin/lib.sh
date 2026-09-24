@@ -73,7 +73,7 @@ stop_runner() {
 start_runner() {
   if runner_alive; then log "[runner] 已在运行 (pid $(runner_pid))"; return 0; fi
   if [ "$(slice_remaining)" -eq 0 ]; then log "[runner] 无剩余任务，不启动"; return 0; fi
-  ( cd "$BATCH" && nohup bash run_forever.sh > runner.log 2>&1 & )
+  ( cd "$BATCH" && nohup bash run_forever.sh > runner.log 2>&1 < /dev/null & )
   sleep 3
   runner_alive && log "[runner] 已启动 (pid $(runner_pid))" || { log "[runner] 启动失败"; return 1; }
 }

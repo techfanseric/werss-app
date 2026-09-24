@@ -1,0 +1,13 @@
+{
+ "created": "2026-09-24 14:50:35",
+ "note": "seed from legacy werss_batch",
+ "csv": {
+  "已添加": 2490,
+  "未找到": 1400,
+  "待处理": 4237
+ },
+ "feeds": 2492,
+ "articles": 1132,
+ "has_content": 790,
+ "slice_remaining": 4237
+}
