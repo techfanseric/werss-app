@@ -61,7 +61,9 @@ alert_clear() { rm -f "$LOGS/.alert-state-$1" 2>/dev/null; }
 notify_action() {
   local key="$1" title="$2" body="$3" cmd="$4" furl="${5:-}"
   if command -v terminal-notifier >/dev/null 2>&1; then
-    terminal-notifier -title "werss 需要处理" -subtitle "$title" -message "$body" \
+    # 强制 UTF-8 locale：terminal-notifier 在非 UTF-8 环境下中文会乱码
+    LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 terminal-notifier \
+      -title "werss 需要处理" -subtitle "$title" -message "$body" \
       -sound Sosumi -group "werss-$key" -execute "$cmd" >/dev/null 2>&1 \
       || notify "$title" "$body"
     mkdir -p "$LOGS"; echo fail > "$LOGS/.alert-state-$key"   # 记状态但从不自动打开

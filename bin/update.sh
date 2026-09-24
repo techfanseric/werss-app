@@ -6,9 +6,24 @@
 # 用法: update.sh [--check]   --check 只报告新版本，不更新
 . "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 
-REPO="${WERSS_GITHUB_REPO:-}"
-if [ -z "$REPO" ]; then
-  echo "[update] config.env 未设置 WERSS_GITHUB_REPO，跳过"
+# 仓库地址解析（零配置，无需在各机器上做任何设置）：
+#   ① config/env 显式指定的 WERSS_GITHUB_REPO → ② 本目录 git remote origin 自动探测
+#   （git@github.com:u/r.git / https://github.com/u/r.git 均可）→ ③ 都没有则跳过。
+# 用 zip 安装的新机（无 .git）靠发布时写入 config.example.env 的地址兜底（见 bin/publish.sh）。
+resolve_repo() {
+  if [ -n "${WERSS_GITHUB_REPO:-}" ]; then echo "$WERSS_GITHUB_REPO"; return 0; fi
+  local url
+  url=$(git -C "$WERSS_ROOT" remote get-url origin 2>/dev/null) || return 1
+  url=$(printf '%s' "$url" | sed -E 's#\.git$##; s#^git@github\.com:##; s#^https?://github\.com/##')
+  case "$url" in
+    */*) echo "$url"; return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+REPO=$(resolve_repo)
+if [ -z "${REPO:-}" ]; then
+  echo "[update] 未解析到 GitHub 仓库地址（发布时运行 bin/publish.sh 即全程自动），跳过"
   exit 0
 fi
 

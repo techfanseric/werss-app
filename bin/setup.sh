@@ -147,10 +147,13 @@ fi
 # ---- 6. 完成 ----
 step "6/6 完成"
 bash "$WERSS_ROOT/bin/status.sh" || true
+# 新装机立即对齐最新 Release（zip 可能落后于 GitHub 上的版本；零配置）
+bash "$WERSS_ROOT/bin/update.sh" 2>&1 | tail -2 || true
 echo
 echo "后续无需任何操作："
 echo "  · 开机登录后自动恢复全套（Docker→容器→采集）"
-echo "  · 每 30 分钟自动保活；需要你扫码时会弹 Mac 系统通知"
+echo "  · 每 30 分钟自动保活；需要你时会弹可点击的通知（点击直达处理页）"
+echo "  · 每天自动检查 GitHub Release 并自我更新"
 echo "  · 日常看状态/打开管理页：双击 WERSS控制台.app"
 echo "  · 换机交接：双击 交接导出.command / 交接导入.command"
 notify "werss-app 安装完成" "系统已就绪并进入自动保活"

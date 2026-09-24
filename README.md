@@ -64,14 +64,18 @@ macOS 横幅默认 ~5 秒收起进通知中心。要让 werss 的横幅**停留�
 
 （条目要等该应用发过一次通知后才会出现。）
 
-## 自动更新（GitHub Release）
+## 自动更新（GitHub Release，机器端零配置）
 
-1. 本仓库推送到你的 GitHub 项目后，打 tag 发 Release（如 `v1.1.1`）。
-2. 在本机 `config.env` 填 `WERSS_GITHUB_REPO=你的用户名/werss-app`。
-3. 保活每天自动检查一次：有新 Release → 自动下载覆盖**代码** → 重装自启 →
-   重启 runner → 弹提示。`data/`、`companies.csv`、`config.env`、采集队列与
-   进度**永不被更新触碰**；更新前代码自动备份到 `backups/code-pre-update-*`。
-4. 手动：`bash bin/update.sh --check`（只看有没有新版）/ `bash bin/update.sh`（立即更新）。
+- **发布端（唯一要做的）**：在开发机上改完代码 → 更新 `VERSION`（如 `v1.2.3`）→ 提交 →
+  `bash bin/publish.sh 用户名/werss-app`（设 remote、写地址入模板、打 tag、推送）→
+  到 GitHub Releases 把 tag 发成 Release。
+- **机器端（什么都不用做）**：仓库地址随代码分发，各机器保活每天自动检查一次
+  Release，有新版 → 自动下载覆盖**代码** → 重装自启 → 重启 runner → 通知。
+  `data/`、`companies.csv`、`config.env`、采集队列与进度**永不被更新触碰**；
+  更新前代码自动备份到 `backups/code-pre-update-*`。
+- 手动：`bash bin/update.sh --check`（只看新版）/ `bash bin/update.sh`（立即更新）。
+- 注意：自动更新走匿名 API，仓库需为 **public**；若改 private，各机器需配置
+  GitHub token（`curl -H "Authorization: Bearer …"`），不建议。
 
 ## 常用命令（可选，双击入口已覆盖日常）
 
