@@ -2,7 +2,6 @@
 // 编译: bash bin/build_menubar.sh
 // 趋势图样式参考 ai-quota-bar：SwiftUI Path 曲线 + 渐变填充 + NSHostingView 嵌入 NSMenu
 import AppKit
-import SwiftUI
 import UserNotifications
 
 let rootURL = Bundle.main.bundleURL.deletingLastPathComponent()  // .app 的上级 = werss-app 根
@@ -79,83 +78,70 @@ enum History {
     }
 }
 
-// ---- SwiftUI：7 天趋势图（并排两张小图：订阅 / 文章）----
-struct Sparkline: View {
-    let name: String
-    let color: Color
-    let points: [Sample]
-    let pick: (Sample) -> Double
+// ---- 7 天趋势图（纯 AppKit 自绘，两栏：公众号 / 文章）----
+final class TrendView: NSView {
+    var samples: [Sample] = [] { didSet { needsDisplay = true } }
+    override var intrinsicContentSize: NSSize { NSSize(width: 320, height: 92) }
 
-    private static let df: DateFormatter = {
-        let f = DateFormatter(); f.dateFormat = "MM/dd"; return f
-    }()
+    private func series(_ rect: NSRect, name: String, color: NSColor, values: [Double]) {
+        // 头行：色点 + 名称 + 当前值 + 7天增量
+        let cur = values.last ?? 0
+        let first = values.first ?? cur
+        let delta = Int(cur - first)
+        let deltaText = delta == 0 ? "持平" : (delta > 0 ? "+\(delta)" : "\(delta)")
+        let para = NSMutableParagraphStyle(); para.lineBreakMode = .byClipping
+        color.setFill()
+        NSBezierPath(roundedRect: NSRect(x: rect.minX, y: rect.maxY - 9, width: 6, height: 6), xRadius: 2, yRadius: 2).fill()
+        (name as NSString).draw(at: NSPoint(x: rect.minX + 10, y: rect.maxY - 12),
+            withAttributes: [.font: NSFont.boldSystemFont(ofSize: 10), .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: para])
+        let head = NSMutableAttributedString()
+        head.append(NSAttributedString(string: "\(Int(cur))", attributes: [.font: NSFont.boldSystemFont(ofSize: 12), .foregroundColor: NSColor.labelColor]))
+        head.append(NSAttributedString(string: "  7天\(deltaText)", attributes: [.font: NSFont.systemFont(ofSize: 8), .foregroundColor: delta >= 0 ? NSColor.systemGreen : NSColor.systemOrange]))
+        head.draw(at: NSPoint(x: rect.maxX - head.size().width - 2, y: rect.maxY - 13))
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            let cur = points.last.map(pick) ?? 0
-            let first = points.first.map(pick) ?? cur
-            let delta = Int(cur - first)
-            let deltaText = delta == 0 ? "持平" : (delta > 0 ? "+\(delta)" : "\(delta)")
-            HStack(spacing: 4) {
-                RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 6, height: 6)
-                Text(name).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
-                Spacer()
-                Text("\(Int(cur))").font(.system(size: 12, weight: .bold)).monospacedDigit()
-                Text("7天\(deltaText)").font(.system(size: 8)).monospacedDigit()
-                    .foregroundStyle(delta >= 0 ? Color.green : Color.orange)
-            }
-            GeometryReader { geo in
-                let w = geo.size.width, h = geo.size.height
-                let vals = points.map(pick)
-                let lo = (vals.min() ?? 0)
-                let hi = max(vals.max() ?? 1, lo + 1)
-                let pad = (hi - lo) * 0.15
-                let vmin = lo - pad, vmax = hi + pad
-                let t1 = Date().timeIntervalSince1970
-                let t0 = t1 - 7 * 86400   // 固定 7 天窗口
-                func pt(_ s: Sample) -> CGPoint {
-                    let x = w * CGFloat((s.t.timeIntervalSince1970 - t0) / (t1 - t0))
-                    let y = h - h * CGFloat((pick(s) - vmin) / (vmax - vmin))
-                    return CGPoint(x: min(max(0, x), w), y: min(max(2, y), h - 2))
-                }
-                ZStack {
-                    if points.count >= 2 {
-                        let line = Path { p in
-                            p.move(to: pt(points[0]))
-                            for s in points.dropFirst() { p.addLine(to: pt(s)) }
-                        }
-                        line.stroke(color.opacity(0.95), style: StrokeStyle(lineWidth: 1.5, lineJoin: .round))
-                        Path { p in
-                            p.move(to: pt(points[0]))
-                            for s in points.dropFirst() { p.addLine(to: pt(s)) }
-                            p.addLine(to: CGPoint(x: w, y: h)); p.addLine(to: CGPoint(x: 0, y: h)); p.closeSubpath()
-                        }.fill(LinearGradient(colors: [color.opacity(0.28), color.opacity(0.02)], startPoint: .top, endPoint: .bottom))
-                    } else {
-                        Text("采集中…").font(.system(size: 8)).foregroundStyle(.tertiary)
-                            .frame(width: w, height: h, alignment: .center)
-                    }
-                }
-            }
-            HStack {
-                Text(Self.df.string(from: Date().addingTimeInterval(-7 * 86400))).font(.system(size: 7)).foregroundStyle(.tertiary)
-                Spacer()
-                Text("今天").font(.system(size: 7)).foregroundStyle(.tertiary)
-            }
+        // 曲线区
+        let chart = NSRect(x: rect.minX, y: rect.minY + 12, width: rect.width, height: rect.height - 28)
+        guard values.count >= 2 else {
+            ("采集中…" as NSString).draw(in: chart, withAttributes: [.font: NSFont.systemFont(ofSize: 8), .foregroundColor: NSColor.tertiaryLabelColor])
+            return
         }
+        let lo = values.min()!, hi = max(values.max()!, lo + 1)
+        let pad = (hi - lo) * 0.18
+        let vmin = lo - pad, vmax = hi + pad
+        let t1 = Date().timeIntervalSince1970
+        let t0 = t1 - 7 * 86400   // 固定 7 天窗口
+        func pt(_ i: Int) -> NSPoint {
+            let ts = Date().timeIntervalSince1970 - (t1 - self.samples[i].t.timeIntervalSince1970)
+            _ = ts
+            let x = chart.minX + chart.width * CGFloat(max(0, min(1, (self.samples[i].t.timeIntervalSince1970 - t0) / (t1 - t0))))
+            let y = chart.minY + chart.height * CGFloat(max(0.02, min(0.98, (values[i] - vmin) / (vmax - vmin))))
+            return NSPoint(x: x, y: y)
+        }
+        let line = NSBezierPath()
+        line.move(to: pt(0))
+        for i in 1..<values.count { line.line(to: pt(i)) }
+        line.lineWidth = 1.5; line.lineJoinStyle = .round
+        color.setStroke(); line.stroke()
+        let area = line.copy() as! NSBezierPath
+        area.line(to: NSPoint(x: chart.maxX, y: chart.minY))
+        area.line(to: NSPoint(x: chart.minX, y: chart.minY))
+        area.close()
+        NSGradient(starting: color.withAlphaComponent(0.30), ending: color.withAlphaComponent(0.02))?
+            .draw(in: area, angle: -90)
     }
-}
 
-struct TrendPanel: View {
-    let samples: [Sample]
-    var body: some View {
-        HStack(spacing: 14) {
-            Sparkline(name: "公众号", color: Color(nsColor: .controlAccentColor), points: samples) { $0.feeds }
-                .frame(width: 140, height: 64)
-            Sparkline(name: "文章", color: .orange, points: samples) { $0.articles }
-                .frame(width: 140, height: 64)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 6)
+    override func draw(_ dirtyRect: NSRect) {
+        let feeds = samples.map { $0.feeds }
+        let articles = samples.map { $0.articles }
+        let half = NSRect(x: bounds.minX + 14, y: bounds.minY + 2, width: (bounds.width - 42) / 2, height: bounds.height - 4)
+        series(half, name: "公众号", color: .controlAccentColor, values: feeds)
+        series(half.offsetBy(dx: half.width + 14, dy: 0), name: "文章", color: .systemOrange, values: articles)
+        // 底部时间轴
+        let f = DateFormatter(); f.dateFormat = "MM/dd"
+        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 7), .foregroundColor: NSColor.tertiaryLabelColor]
+        (f.string(from: Date().addingTimeInterval(-7 * 86400)) as NSString)
+            .draw(at: NSPoint(x: bounds.minX + 14, y: bounds.minY + 1), withAttributes: attrs)
+        ("今天" as NSString).draw(at: NSPoint(x: bounds.maxX - 130, y: bounds.minY + 1), withAttributes: attrs)
     }
 }
 
@@ -313,14 +299,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let d = st.dict
         menu.addItem(mkItem("Docker: \(d["docker"] ?? "?")   容器: \(d["container"] ?? "?")   应用: \(d["app"] ?? "?")"))
         menu.addItem(mkItem("采集 runner: \(d["runner"] ?? "?")   待采队列: \(d["slice"] ?? "?") 家"))
-        menu.addItem(mkItem("订阅: \(d["feeds"] ?? "?")   文章: \(d["articles"] ?? "?")（有正文 \(d["has_content"] ?? "?")）"))
+        // 订阅/文章当前值由趋势图头行展示，不再重复列文字行
         menu.addItem(mkItem("微信读书授权: \(d["weread"] == "OK" ? "正常" : (d["weread"] == "FAIL" ? "已失效，待扫码" : (d["weread"] ?? "?")) )"))
 
         // 7 天趋势（公众号 / 文章双曲线）
         let trendItem = NSMenuItem()
-        let hosting = NSHostingView(rootView: TrendPanel(samples: samples))
-        hosting.frame = NSRect(x: 0, y: 0, width: 320, height: 84)
-        trendItem.view = hosting
+        let trend = TrendView(frame: NSRect(x: 0, y: 0, width: 320, height: 92))
+        trend.samples = samples
+        trendItem.view = trend
         menu.addItem(trendItem)
 
         if st.wereadFail || st.runnerDown || st.appDown || st.dockerDown {
