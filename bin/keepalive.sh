@@ -68,12 +68,14 @@ if app_alive; then
   if [ -n "$TOK" ]; then
     WR=$(curl -s -m 10 -X POST "$WERSS_APP_URL/api/v1/wx/weread/test" -H "Authorization: Bearer $TOK" 2>/dev/null)
     if ! echo "$WR" | grep -qiE 'true|有效|success|"code":200'; then
-      log "[keepalive] weread 授权疑似失效，提醒扫码"
-      notify_important weread "微信读书授权失效，请扫码" \
-        "文章正文采集暂停（账号添加不受影响）。页面如需登录：$WERSS_ADMIN_USER / $WERSS_ADMIN_PASS" \
+      log "[keepalive] weread 授权疑似失效，发可点击提醒"
+      notify_action weread "微信读书授权失效，请扫码" \
+        "文章正文采集暂停（账号添加不受影响）。登录账密：$WERSS_ADMIN_USER / $WERSS_ADMIN_PASS。点击本通知直达扫码页（自动登录）" \
+        "bash $WERSS_ROOT/bin/open_scan_page.sh" \
         "$WERSS_APP_URL/weread"
     else
       alert_clear weread
+      terminal-notifier -remove werss-weread >/dev/null 2>&1 || true
     fi
   else
     log "[keepalive] 管理端登录失败（检查 config.env 凭据）"

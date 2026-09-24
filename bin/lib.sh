@@ -54,6 +54,22 @@ notify_important() {
 # 异常恢复后清除状态（下次再出问题会重新触发一次性动作）
 alert_clear() { rm -f "$LOGS/.alert-state-$1" 2>/dev/null; }
 
+# 可点击行动的通知（首选）：terminal-notifier 发横幅，**点击横幅本体**执行命令
+# （不自动打开浏览器，不打断当前操作）；未安装 terminal-notifier 时降级为
+# notify_important（状态首变时自动打开一次 FALLBACK_URL）。
+#   notify_action "状态键" "标题" "正文" "点击执行的命令" ["降级时打开的URL"]
+notify_action() {
+  local key="$1" title="$2" body="$3" cmd="$4" furl="${5:-}"
+  if command -v terminal-notifier >/dev/null 2>&1; then
+    terminal-notifier -title "werss 需要处理" -subtitle "$title" -message "$body" \
+      -sound Sosumi -group "werss-$key" -execute "$cmd" >/dev/null 2>&1 \
+      || notify "$title" "$body"
+    mkdir -p "$LOGS"; echo fail > "$LOGS/.alert-state-$key"   # 记状态但从不自动打开
+  else
+    notify_important "$key" "$title" "$body" "$furl"
+  fi
+}
+
 # 所有 docker 调用加超时：引擎半卡死时 CLI 可能无限挂起，不能拖死保活
 docker_ok() { with_timeout 30 docker info >/dev/null 2>&1; }
 
