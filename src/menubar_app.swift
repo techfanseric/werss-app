@@ -130,25 +130,24 @@ final class TrendView: NSView {
             return NSPoint(x: x, y: y)
         }
 
-        // 小时级网格：每 6 小时细线，每天 0 点主线 + 底部日期标签
+        // 天与天之间：仅一条很弱的虚线分隔（无小时网格）
         let cal = Calendar.current
         var gridDayXs: [(CGFloat, String)] = []
         let df = DateFormatter(); df.dateFormat = "MM/dd"
-        // 对齐到 t0 之后的第一个整点
         var tick = t0 + (3600 - t0.truncatingRemainder(dividingBy: 3600))
         while tick <= t1 {
             let d = Date(timeIntervalSince1970: tick)
-            let h = cal.component(.hour, from: d)
-            let x = xOf(tick)
-            if h == 0 {
-                NSColor.separatorColor.withAlphaComponent(0.35).setStroke()
-                let major = NSBezierPath(rect: NSRect(x: x, y: chart.minY, width: 0.7, height: chart.height))
-                major.stroke()
+            if cal.component(.hour, from: d) == 0 {
+                let x = xOf(tick)
+                let sep = NSBezierPath()
+                sep.move(to: NSPoint(x: x, y: chart.minY))
+                sep.line(to: NSPoint(x: x, y: chart.maxY))
+                sep.lineWidth = 0.5
+                sep.setLineDash([1.5, 3], count: 2, phase: 0)
+                NSColor.separatorColor.withAlphaComponent(0.28).setStroke()
+                sep.stroke()
+                sep.setLineDash([], count: 0, phase: 0)
                 if axisBottom { gridDayXs.append((x, df.string(from: d))) }
-            } else if h % 6 == 0 {
-                NSColor.separatorColor.withAlphaComponent(0.15).setStroke()
-                let minor = NSBezierPath(rect: NSRect(x: x, y: chart.minY, width: 0.5, height: chart.height))
-                minor.stroke()
             }
             tick += 3600
         }
