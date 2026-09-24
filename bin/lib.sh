@@ -16,6 +16,9 @@ set +a
 # PATH 补全：launchd 代理环境只有 /usr/bin:/bin:/usr/sbin:/sbin，
 # 需补 docker(/usr/local/bin) 与 ego-browser(~/.local/bin)；Homebrew 路径一并补上
 export PATH="/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin:$PATH"
+# locale 补全：launchd/无头环境 LANG 为空时，osascript/中文参数会乱码，必须显式 UTF-8
+export LANG="${LANG:-en_US.UTF-8}"
+export LC_ALL="${LC_ALL:-en_US.UTF-8}"
 
 BATCH="$WERSS_ROOT/batch"
 LOGS="$WERSS_ROOT/logs"
@@ -30,64 +33,37 @@ with_timeout() {
   perl -e 'alarm shift; exec @ARGV' "$secs" "$@"
 }
 
-# macOS 通知（统一走 terminal-notifier，通知归属干净、点击有动作；
-# 未安装时才降级 osascript——注意 osascript 通知点击会打开「脚本编辑器」，属系统行为）
-#   notify "标题" "正文"        点击通知 → 打开管理页
+# 底层通知发送：统一 osascript（macOS 通知归属「脚本编辑器」，稳定必达、任何环境可用）。
+# 注意：此类通知点击会打开脚本编辑器——**通知只做信息提示**，动作入口是 WERSS控制台.app
+# （双击/Dock 一键直达扫码页等）。历史教训：terminal-notifier 权限会被系统静默关死、
+# 未签名自研组件拿不到权限弹窗，均不可靠，已弃用。
+#   werss_notify "标题" "副标题" "正文" "声音(default/Glass/Sosumi)" "分组ID(仅记日志)"
+werss_notify() {
+  osascript -e "display notification \"${3:-}\" with title \"${1:-werss}\" subtitle \"${2:-}\" sound name \"${4:-Glass}\"" >/dev/null 2>&1 || true
+  echo "$(date '+%m-%d %H:%M:%S') osascript ${5:-}" >> "$LOGS/notify.log"
+}
+
+# macOS 通知（右上角横幅+声音；信息提示，操作请用 WERSS控制台.app）
+#   notify "标题" "正文"
 notify() {
-  local title="$1" body="${2:-}"
-  if command -v terminal-notifier >/dev/null 2>&1; then
-    LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 terminal-notifier \
-      -title "werss" -subtitle "$title" -message "$body" -sound Glass \
-      -group "werss-info" \
-      -execute "open $WERSS_APP_URL/" >/dev/null 2>&1 || true
-  else
-    osascript -e "display notification \"${body:-}\" with title \"werss\" subtitle \"${title:-}\" sound name \"Glass\"" >/dev/null 2>&1 || true
-  fi
+  werss_notify "werss" "${1:-}" "${2:-}" "Glass" "info"
 }
 
-# 需要人介入的提醒：响更明显的声音；配了 URL 时**点击通知可打开**（不自动打开，
-# 不打断当前操作）；仅在无 terminal-notifier 的降级模式下才「状态首变时自动打开一次」。
-#   notify_important "状态键" "标题" "正文" ["URL"]
+# 需要人介入的提醒（声音更醒目；正文写清用控制台怎么处理）
+#   notify_important "状态键" "标题" "正文"
 notify_important() {
-  local key="$1" title="$2" body="$3" url="${4:-}"
-  local f="$LOGS/.alert-state-$key" prev
-  prev=$(cat "$f" 2>/dev/null || echo ok)
-  if command -v terminal-notifier >/dev/null 2>&1; then
-    local extra=()
-    [ -n "$url" ] && extra=(-execute "open $url")
-    LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 terminal-notifier \
-      -title "werss 需要处理" -subtitle "$title" -message "$body" \
-      -sound Sosumi -group "werss-$key" "${extra[@]}" >/dev/null 2>&1 || true
-    echo fail > "$f"
-  else
-    osascript -e "display notification \"${body:-}\" with title \"werss 需要处理\" subtitle \"${title:-}\" sound name \"Sosumi\"" >/dev/null 2>&1 || true
-    if [ "$prev" != "fail" ] && [ -n "$url" ]; then
-      open "$url" 2>/dev/null
-    fi
-    echo fail > "$f"
-  fi
+  local key="$1" title="$2" body="$3"
+  werss_notify "werss 需要处理" "$title" "$body" "Sosumi" "$key"
+  echo fail > "$LOGS/.alert-state-$key"
 }
 
-# 异常恢复后清除状态（下次再出问题会重新触发一次性动作）
-alert_clear() { rm -f "$LOGS/.alert-state-$1" 2>/dev/null; }
-
-# 可点击行动的通知（首选）：terminal-notifier 发横幅，**点击横幅本体**执行命令
-# （不自动打开浏览器，不打断当前操作）；未安装 terminal-notifier 时降级为
-# notify_important（状态首变时自动打开一次 FALLBACK_URL）。
-#   notify_action "状态键" "标题" "正文" "点击执行的命令" ["降级时打开的URL"]
+# 兼容旧调用
 notify_action() {
-  local key="$1" title="$2" body="$3" cmd="$4" furl="${5:-}"
-  if command -v terminal-notifier >/dev/null 2>&1; then
-    # 强制 UTF-8 locale：terminal-notifier 在非 UTF-8 环境下中文会乱码
-    LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 terminal-notifier \
-      -title "werss 需要处理" -subtitle "$title" -message "$body" \
-      -sound Sosumi -group "werss-$key" -execute "$cmd" >/dev/null 2>&1 \
-      || notify "$title" "$body"
-    mkdir -p "$LOGS"; echo fail > "$LOGS/.alert-state-$key"   # 记状态但从不自动打开
-  else
-    notify_important "$key" "$title" "$body" "$furl"
-  fi
+  notify_important "$1" "$2" "$3"
 }
+
+# 异常恢复后清除状态（下次再出问题会重新触发控制台分发）
+alert_clear() { rm -f "$LOGS/.alert-state-$1" 2>/dev/null; }
 
 # 所有 docker 调用加超时：引擎半卡死时 CLI 可能无限挂起，不能拖死保活
 docker_ok() { with_timeout 30 docker info >/dev/null 2>&1; }

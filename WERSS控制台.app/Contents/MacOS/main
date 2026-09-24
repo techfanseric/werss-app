@@ -1,8 +1,17 @@
 #!/bin/bash
-# 双击控制台：确保全套运行 → 弹状态通知 → 打开管理页
-APP_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+# WERSS控制台 入口：双击（建议拖到 Dock）或从聚焦搜索打开
+# 分发逻辑：有扫码待办 → ego 自动登录直达扫码页；否则 → 打开管理页
+# 注意：MacOS → Contents → .app → 仓库根，共三层
+APP_DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
+if [ ! -f "$APP_DIR/bin/lib.sh" ]; then
+  osascript -e 'display notification "目录结构异常：找不到 bin/lib.sh" with title "werss控制台"' >/dev/null 2>&1
+  exit 1
+fi
 . "$APP_DIR/bin/lib.sh"
 bash "$APP_DIR/bin/start.sh" >/dev/null 2>&1
-STAT=$(bash "$APP_DIR/bin/status.sh" 2>/dev/null | head -1)
-notify "WERSS 状态" "${STAT:-状态未知}"
-open "$WERSS_APP_URL/"
+
+if [ -f "$LOGS/.alert-state-weread" ]; then
+  bash "$APP_DIR/bin/open_scan_page.sh" >/dev/null 2>&1
+else
+  [ -n "$WERSS_APP_URL" ] && open "$WERSS_APP_URL/"
+fi

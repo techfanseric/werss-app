@@ -77,18 +77,6 @@ else
   echo "ego-browser 命令就绪 ✓"
 fi
 
-# terminal-notifier（可选：让「需要处理」的通知可点击直达；缺失自动降级）
-if ! command -v terminal-notifier >/dev/null 2>&1; then
-  if command -v brew >/dev/null 2>&1; then
-    echo "安装 terminal-notifier（brew，通知可点击直达）…"
-    brew install terminal-notifier || echo "  失败：通知将降级为「状态首变时自动打开一次」"
-  else
-    echo "无 Homebrew，跳过 terminal-notifier（通知降级为自动打开一次）"
-  fi
-else
-  echo "terminal-notifier 已就绪 ✓（通知可点击直达）"
-fi
-
 # ---- 3. 拉取镜像 ----
 step "3/6 Docker 镜像（约 4.3GB，视网速 10-30 分钟）"
 if [ -f "$WERSS_ROOT/backups/werss-image.tar.gz" ]; then
