@@ -27,7 +27,7 @@ if [ -z "${REPO:-}" ]; then
   exit 0
 fi
 
-LOCAL_V="v$(cat "$WERSS_ROOT/VERSION" 2>/dev/null || echo 0)"
+LOCAL_V="$(cat "$WERSS_ROOT/VERSION" 2>/dev/null || echo v0)"
 REL=$(with_timeout 30 curl -sf -m 20 "https://api.github.com/repos/$REPO/releases/latest") || {
   echo "[update] 无法访问 github.com/$REPO（未发布 release 或网络问题），跳过"; exit 0
 }
