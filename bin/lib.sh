@@ -30,25 +30,42 @@ with_timeout() {
   perl -e 'alarm shift; exec @ARGV' "$secs" "$@"
 }
 
-# macOS 横幅通知（右上角，不抢焦点，约5秒收起进通知中心）：
-#   notify "标题" "正文"
-# 注：想横幅不自动收起，把 系统设置→通知→Script Editor 的样式设为「提醒」(Alerts) 即可
+# macOS 通知（统一走 terminal-notifier，通知归属干净、点击有动作；
+# 未安装时才降级 osascript——注意 osascript 通知点击会打开「脚本编辑器」，属系统行为）
+#   notify "标题" "正文"        点击通知 → 打开管理页
 notify() {
-  osascript -e "display notification \"${2:-}\" with title \"werss\" subtitle \"${1:-}\" sound name \"Glass\"" >/dev/null 2>&1 || true
+  local title="$1" body="${2:-}"
+  if command -v terminal-notifier >/dev/null 2>&1; then
+    LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 terminal-notifier \
+      -title "werss" -subtitle "$title" -message "$body" -sound Glass \
+      -group "werss-info" \
+      -execute "open $WERSS_APP_URL/" >/dev/null 2>&1 || true
+  else
+    osascript -e "display notification \"${body:-}\" with title \"werss\" subtitle \"${title:-}\" sound name \"Glass\"" >/dev/null 2>&1 || true
+  fi
 }
 
-# 需要人介入的提醒：响更明显的声音；**状态刚变为异常时**执行一次性动作（如打开扫码页），
-# 之后每轮保活只发横幅不重复动作（横幅无按钮，也避免反复抢焦点）。
-#   notify_important "状态键" "标题" "正文" ["一次性打开的URL"]
+# 需要人介入的提醒：响更明显的声音；配了 URL 时**点击通知可打开**（不自动打开，
+# 不打断当前操作）；仅在无 terminal-notifier 的降级模式下才「状态首变时自动打开一次」。
+#   notify_important "状态键" "标题" "正文" ["URL"]
 notify_important() {
   local key="$1" title="$2" body="$3" url="${4:-}"
   local f="$LOGS/.alert-state-$key" prev
   prev=$(cat "$f" 2>/dev/null || echo ok)
-  osascript -e "display notification \"${body:-}\" with title \"werss 需要处理\" subtitle \"${title:-}\" sound name \"Sosumi\"" >/dev/null 2>&1 || true
-  if [ "$prev" != "fail" ] && [ -n "$url" ]; then
-    open "$url" 2>/dev/null
+  if command -v terminal-notifier >/dev/null 2>&1; then
+    local extra=()
+    [ -n "$url" ] && extra=(-execute "open $url")
+    LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 terminal-notifier \
+      -title "werss 需要处理" -subtitle "$title" -message "$body" \
+      -sound Sosumi -group "werss-$key" "${extra[@]}" >/dev/null 2>&1 || true
+    echo fail > "$f"
+  else
+    osascript -e "display notification \"${body:-}\" with title \"werss 需要处理\" subtitle \"${title:-}\" sound name \"Sosumi\"" >/dev/null 2>&1 || true
+    if [ "$prev" != "fail" ] && [ -n "$url" ]; then
+      open "$url" 2>/dev/null
+    fi
+    echo fail > "$f"
   fi
-  echo fail > "$f"
 }
 
 # 异常恢复后清除状态（下次再出问题会重新触发一次性动作）

@@ -11,15 +11,17 @@ sed -e "s|__W__|$BATCH|g" -e "s|__APP_URL__|$WERSS_APP_URL|g" \
 
 OUT=$(with_timeout 90 ego-browser nodejs < "$GEN" 2>&1 | tail -1)
 rm -f "$GEN"
-log "[open_scan] $OUT"
+echo "$(date '+%m-%d %H:%M:%S') $OUT" >> "$LOGS/open_scan.log"   # 点击通知的执行留证
 
 if echo "$OUT" | grep -q "SCAN_PAGE_READY"; then
   open -a "ego lite" 2>/dev/null   # 把扫码窗口带到前台
-  notify "扫码页已打开" "请在 ego lite 窗口扫码"
+  notify_action scanok "扫码页已打开" "请在 ego lite 窗口扫码；没看到窗口可再点本通知" \
+    "bash $WERSS_ROOT/bin/open_scan_page.sh"
   log "[open_scan] 扫码页已在前台"
 else
   # 兜底：默认浏览器（无登录态会先到登录页，账密在通知正文里）
   open "$WERSS_APP_URL/weread" 2>/dev/null
-  notify "请在浏览器登录后扫码" "登录账密：$WERSS_ADMIN_USER / $WERSS_ADMIN_PASS"
+  notify_action scanok "请在浏览器登录后扫码" "登录账密：$WERSS_ADMIN_USER / $WERSS_ADMIN_PASS；点本通知重试直达" \
+    "bash $WERSS_ROOT/bin/open_scan_page.sh"
   log "[open_scan] ego 失败，已用默认浏览器兜底"
 fi
