@@ -67,7 +67,7 @@ alert_weread() {
   sed -e "s|__W__|$BATCH|g" -e "s|__APP_URL__|$WERSS_APP_URL|g" \
       -e "s|__ADMIN_USER__|$WERSS_ADMIN_USER|g" -e "s|__ADMIN_PASS__|$WERSS_ADMIN_PASS|g" \
       "$BATCH/login_alert.js.template" > "$BATCH/login_alert.gen.js"
-  timeout 90 ego-browser nodejs < "$BATCH/login_alert.gen.js" >/dev/null 2>&1
+  with_timeout 90 ego-browser nodejs < "$BATCH/login_alert.gen.js" >/dev/null 2>&1
   open "$WERSS_APP_URL/weread" 2>/dev/null
 }
 

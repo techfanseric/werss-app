@@ -21,6 +21,12 @@ mkdir -p "$LOGS"
 
 log() { echo "$(date '+%m-%d %H:%M:%S') $*"; }
 
+# 便携 timeout（macOS 无 GNU timeout，用 perl alarm 实现）：with_timeout <秒> <命令…>
+with_timeout() {
+  local secs="$1"; shift
+  perl -e 'alarm shift; exec @ARGV' "$secs" "$@"
+}
+
 # macOS 系统通知：notify "标题" "正文"
 notify() {
   osascript -e "display notification \"${2:-}\" with title \"werss\" subtitle \"${1:-}\" sound name \"Glass\"" >/dev/null 2>&1 || true
