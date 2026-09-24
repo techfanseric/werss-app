@@ -1,6 +1,7 @@
-// WERSS菜单栏：常驻状态图标 + 下拉菜单（状态总览/待办直达/常用操作）
-// 编译: swiftc -O -o WERSS菜单栏.app/Contents/MacOS/main src/menubar_app.swift（见 bin/build_menubar.sh）
+// WERSS菜单栏：常驻状态图标 + 下拉菜单 + 可点击系统通知（点击直达动作）
+// 编译: bash bin/build_menubar.sh（swiftc → WERSS菜单栏.app/Contents/MacOS/main）
 import AppKit
+import UserNotifications
 
 let rootURL = Bundle.main.bundleURL.deletingLastPathComponent()  // .app 的上级 = werss-app 根
 let root = rootURL.path
@@ -15,7 +16,6 @@ func shEnv() -> [String: String] {
     return e
 }
 
-// 后台跑 bash 命令（不等待；需要输出时用 runShCapture）
 func runSh(_ cmd: String) {
     DispatchQueue.global().async {
         let p = Process()
@@ -38,9 +38,8 @@ func runShCapture(_ cmd: String, timeout: Double, done: @escaping (String) -> Vo
         p.standardOutput = pipe
         p.standardError = FileHandle.nullDevice
         do { try p.run() } catch { DispatchQueue.main.async { done("") }; return }
-        // 超时看门：超时直接放弃本轮（进程任其自然退出）
         DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
-            if p.isRunning { return }  // 已结束则无事
+            if p.isRunning { p.terminate() }
         }
         p.waitUntilExit()
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
@@ -59,13 +58,63 @@ struct Status {
     var level: Int { dockerDown ? 3 : (appDown ? 3 : (wereadFail || runnerDown ? 2 : 1)) }  // 1正常 2待办 3故障
 }
 
+// ---- 可点击通知：真 App 进程 + 事件循环，权限/点击回调均可用 ----
+final class Notifier: NSObject, UNUserNotificationCenterDelegate {
+    static let shared = Notifier()
+    var authorized = false
+
+    func bootstrap() {
+        let c = UNUserNotificationCenter.current()
+        c.delegate = self
+        c.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            self.authorized = granted
+        }
+    }
+
+    // 发通知（同 id 自动替换旧的，不堆积）；action = 点击后执行的动作
+    func post(id: String, title: String, body: String, action: String, sound: Bool = true) {
+        guard authorized else { return }
+        let c = UNUserNotificationCenter.current()
+        c.removeDeliveredNotifications(withIdentifiers: [id])
+        c.removePendingNotificationRequests(withIdentifiers: [id])
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.userInfo = ["action": action]
+        if sound { content.sound = .default }
+        c.add(UNNotificationRequest(identifier: id, content: content, trigger: nil))
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .sound])
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        let action = response.notification.request.content.userInfo["action"] as? String ?? "admin"
+        switch action {
+        case "scan":   runSh("bash '\(root)/bin/open_scan_page.sh'")
+        case "repair": runSh("bash '\(root)/bin/keepalive.sh'")
+        default:       runSh("open http://localhost:8001/")
+        }
+        completionHandler()
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var st = Status()
     var lastLevel = 0
+    var prevWereadFail = false
+    var lastWereadNag: Date?          // 待扫码重复提醒节流（30 分钟）
+    var lastFaultNag: Date?
     var menu = NSMenu()
 
     func applicationDidFinishLaunching(_ n: Notification) {
+        Notifier.shared.bootstrap()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = "werss …"
         statusItem.button?.toolTip = "微信公众号采集系统"
@@ -82,15 +131,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let kv = line.split(separator: "=", maxSplits: 1)
                 if kv.count == 2 { d[String(kv[0]).trimmingCharacters(in: .whitespaces)] = String(kv[1]).trimmingCharacters(in: .whitespaces) }
             }
+            self.prevWereadFail = self.st.wereadFail
+            self.lastLevel = self.st.level
             self.st = Status()
             self.st.dict = d
             self.render()
+            self.notifyOnTransitions()
+        }
+    }
+
+    // 状态变化 → 可点击通知（点击直达对应动作）；重复待办 30 分钟节流
+    func notifyOnTransitions() {
+        let now = Date()
+        if st.wereadFail && (!prevWereadFail || lastWereadNag == nil || now.timeIntervalSince(lastWereadNag!) > 1800) {
+            Notifier.shared.post(id: "werss-weread",
+                title: "微信读书授权失效，待扫码",
+                body: "点此直达扫码页（自动登录）。文章正文暂停中，扫码后 ≤10 分钟自动恢复采集",
+                action: "scan")
+            lastWereadNag = now
+        }
+        if st.level == 3 && (lastLevel < 3 || lastFaultNag == nil || now.timeIntervalSince(lastFaultNag!) > 1800) {
+            Notifier.shared.post(id: "werss-fault",
+                title: "werss 系统故障",
+                body: "Docker/容器/应用异常。点此立即自动修复",
+                action: "repair")
+            lastFaultNag = now
+        }
+        if !prevWereadFail && st.wereadFail == false && lastLevel >= 2 {
+            // 扫码成功 → 提示已自动恢复
+            Notifier.shared.post(id: "werss-recovered",
+                title: "微信读书授权已恢复",
+                body: "文章正文采集将自动继续（≤10 分钟内下一轮补抓生效）",
+                action: "admin", sound: false)
+        }
+        if lastLevel >= 2 && st.level == 1 {
+            Notifier.shared.post(id: "werss-recovered",
+                title: "werss 已恢复正常",
+                body: "全部组件在线，采集运行中",
+                action: "admin", sound: false)
         }
     }
 
     func render() {
-        let lvl = st.level
-        switch lvl {
+        switch st.level {
         case 3: statusItem.button?.title = "werss ✕"
         case 2: statusItem.button?.title = "werss ⚠️"
         default: statusItem.button?.title = "werss ✓"
@@ -98,21 +181,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let d = st.dict
         statusItem.button?.toolTip = "订阅\(d["feeds"] ?? "?") 文章\(d["articles"] ?? "?") 待采\(d["slice"] ?? "?")"
         rebuildMenu()
-        // 状态升级为异常时补一条横幅（图标常驻为主，通知为辅）
-        if lastLevel != 0 && lvl > lastLevel && lvl >= 2 {
-            runSh("osascript -e 'display notification \"点菜单栏 werss 图标查看待办\" with title \"werss 状态变化\" sound name \"Sosumi\"'")
-        }
-        lastLevel = lvl
     }
 
-    func mkItem(_ title: String, action: Selector? = nil, bold: Bool = false, indent: Bool = false) -> NSMenuItem {
+    func mkItem(_ title: String, action: Selector? = nil, bold: Bool = false) -> NSMenuItem {
         let m = NSMenuItem(title: title, action: action, keyEquivalent: "")
         m.target = action == nil ? nil : self
         m.isEnabled = action != nil
-        if bold {
-            m.attributedTitle = NSAttributedString(string: title, attributes: [.font: NSFont.boldSystemFont(ofSize: 13)])
-        }
-        if indent { m.indentationLevel = 1 }
+        if bold { m.attributedTitle = NSAttributedString(string: title, attributes: [.font: NSFont.boldSystemFont(ofSize: 13)]) }
         return m
     }
 
@@ -126,15 +201,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if st.wereadFail || st.runnerDown || st.appDown || st.dockerDown {
             menu.addItem(NSMenuItem.separator())
-            menu.addItem(mkItem("── 待办 ──"))
-            if st.wereadFail {
-                menu.addItem(mkItem("→ 微信读书待扫码：点此直达（自动登录）", action: #selector(openScan), bold: true))
-            }
-            if st.appDown || st.dockerDown {
-                menu.addItem(mkItem("→ 系统故障：点此立即保活修复", action: #selector(runKeepalive), bold: true))
-            } else if st.runnerDown {
-                menu.addItem(mkItem("→ runner 未运行：点此拉起", action: #selector(runKeepalive), bold: true))
-            }
+            menu.addItem(mkItem("── 待办（点击直达）──"))
+            if st.wereadFail { menu.addItem(mkItem("→ 微信读书待扫码：直达扫码页", action: #selector(openScan), bold: true)) }
+            if st.appDown || st.dockerDown { menu.addItem(mkItem("→ 系统故障：立即保活修复", action: #selector(runKeepalive), bold: true)) }
+            else if st.runnerDown { menu.addItem(mkItem("→ runner 未运行：拉起", action: #selector(runKeepalive), bold: true)) }
         }
 
         menu.addItem(NSMenuItem.separator())
@@ -151,7 +221,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func refreshNow() { statusItem.button?.title = "werss …"; refresh() }
-    @objc func openAdmin() { runSh("open '\(ProcessInfo.processInfo.environment["WERSS_APP_URL"] ?? "http://localhost:8001")/' 2>/dev/null || open http://localhost:8001/") }
+    @objc func openAdmin() { runSh("open http://localhost:8001/") }
     @objc func openScan() { runSh("bash '\(root)/bin/open_scan_page.sh'") }
     @objc func runKeepalive() { runSh("bash '\(root)/bin/keepalive.sh'") }
     @objc func doExport() { NSWorkspace.shared.open(rootURL.appendingPathComponent("交接导出.command")) }

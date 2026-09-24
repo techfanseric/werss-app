@@ -50,9 +50,14 @@ notify() {
 }
 
 # 需要人介入的提醒（声音更醒目；正文写清用控制台怎么处理）
+# 菜单栏应用在跑时不发（它每 30 秒刷新状态、自己发可点击通知，避免重复轰炸）
 #   notify_important "状态键" "标题" "正文"
 notify_important() {
   local key="$1" title="$2" body="$3"
+  if pgrep -f "WERSS菜单栏.app" >/dev/null 2>&1; then
+    echo fail > "$LOGS/.alert-state-$key"   # 菜单栏会接管提醒
+    return
+  fi
   werss_notify "werss 需要处理" "$title" "$body" "Sosumi" "$key"
   echo fail > "$LOGS/.alert-state-$key"
 }
