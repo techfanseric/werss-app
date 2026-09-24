@@ -11,8 +11,9 @@ set -a
 . "$WERSS_ROOT/config.env"
 set +a
 
-# ego-browser CLI 注册在 ~/.local/bin
-export PATH="$HOME/.local/bin:$PATH"
+# PATH 补全：launchd 代理环境只有 /usr/bin:/bin:/usr/sbin:/sbin，
+# 需补 docker(/usr/local/bin) 与 ego-browser(~/.local/bin)；Homebrew 路径一并补上
+export PATH="/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin:$PATH"
 
 BATCH="$WERSS_ROOT/batch"
 LOGS="$WERSS_ROOT/logs"
