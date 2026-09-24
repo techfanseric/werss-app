@@ -1,6 +1,8 @@
-// WERSS菜单栏：常驻状态图标 + 下拉菜单 + 可点击系统通知（点击直达动作）
-// 编译: bash bin/build_menubar.sh（swiftc → WERSS菜单栏.app/Contents/MacOS/main）
+// WERSS菜单栏：常驻状态图标 + 下拉菜单（状态/7天趋势曲线/待办直达/可点击通知）
+// 编译: bash bin/build_menubar.sh
+// 趋势图样式参考 ai-quota-bar：SwiftUI Path 曲线 + 渐变填充 + NSHostingView 嵌入 NSMenu
 import AppKit
+import SwiftUI
 import UserNotifications
 
 let rootURL = Bundle.main.bundleURL.deletingLastPathComponent()  // .app 的上级 = werss-app 根
@@ -48,6 +50,115 @@ func runShCapture(_ cmd: String, timeout: Double, done: @escaping (String) -> Vo
     }
 }
 
+// ---- 7 天历史采样：logs/history.tsv，每行 "unix feeds articles" ----
+struct Sample { let t: Date; let feeds: Double; let articles: Double }
+
+enum History {
+    static let file = root + "/logs/history.tsv"
+
+    static func load() -> [Sample] {
+        guard let s = try? String(contentsOfFile: file, encoding: .utf8) else { return [] }
+        let cutoff = Date().addingTimeInterval(-7 * 86400)
+        return s.split(separator: "\n").compactMap { line in
+            let p = line.split(separator: "\t")
+            guard p.count >= 3, let t = TimeInterval(p[0]), let f = Double(p[1]), let a = Double(p[2]) else { return nil }
+            let d = Date(timeIntervalSince1970: t)
+            return d >= cutoff ? Sample(t: d, feeds: f, articles: a) : nil
+        }.sorted { $0.t < $1.t }
+    }
+
+    static func sample(feeds: Double, articles: Double) {
+        var lines = (try? String(contentsOfFile: file, encoding: .utf8)) ?? ""
+        let cutoff = Date().addingTimeInterval(-8 * 86400).timeIntervalSince1970
+        var kept: [String] = []
+        for line in lines.split(separator: "\n") {
+            if let t = line.split(separator: "\t").first, let v = TimeInterval(t), v >= cutoff { kept.append(String(line)) }
+        }
+        kept.append("\(Int(Date().timeIntervalSince1970))\t\(Int(feeds))\t\(Int(articles))")
+        try? kept.joined(separator: "\n").write(toFile: file, atomically: true, encoding: .utf8)
+    }
+}
+
+// ---- SwiftUI：7 天趋势图（并排两张小图：订阅 / 文章）----
+struct Sparkline: View {
+    let name: String
+    let color: Color
+    let points: [Sample]
+    let pick: (Sample) -> Double
+
+    private static let df: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "MM/dd"; return f
+    }()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            let cur = points.last.map(pick) ?? 0
+            let first = points.first.map(pick) ?? cur
+            let delta = Int(cur - first)
+            let deltaText = delta == 0 ? "持平" : (delta > 0 ? "+\(delta)" : "\(delta)")
+            HStack(spacing: 4) {
+                RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 6, height: 6)
+                Text(name).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                Spacer()
+                Text("\(Int(cur))").font(.system(size: 12, weight: .bold)).monospacedDigit()
+                Text("7天\(deltaText)").font(.system(size: 8)).monospacedDigit()
+                    .foregroundStyle(delta >= 0 ? Color.green : Color.orange)
+            }
+            GeometryReader { geo in
+                let w = geo.size.width, h = geo.size.height
+                let vals = points.map(pick)
+                let lo = (vals.min() ?? 0)
+                let hi = max(vals.max() ?? 1, lo + 1)
+                let pad = (hi - lo) * 0.15
+                let vmin = lo - pad, vmax = hi + pad
+                let t1 = Date().timeIntervalSince1970
+                let t0 = t1 - 7 * 86400   // 固定 7 天窗口
+                func pt(_ s: Sample) -> CGPoint {
+                    let x = w * CGFloat((s.t.timeIntervalSince1970 - t0) / (t1 - t0))
+                    let y = h - h * CGFloat((pick(s) - vmin) / (vmax - vmin))
+                    return CGPoint(x: min(max(0, x), w), y: min(max(2, y), h - 2))
+                }
+                ZStack {
+                    if points.count >= 2 {
+                        let line = Path { p in
+                            p.move(to: pt(points[0]))
+                            for s in points.dropFirst() { p.addLine(to: pt(s)) }
+                        }
+                        line.stroke(color.opacity(0.95), style: StrokeStyle(lineWidth: 1.5, lineJoin: .round))
+                        Path { p in
+                            p.move(to: pt(points[0]))
+                            for s in points.dropFirst() { p.addLine(to: pt(s)) }
+                            p.addLine(to: CGPoint(x: w, y: h)); p.addLine(to: CGPoint(x: 0, y: h)); p.closeSubpath()
+                        }.fill(LinearGradient(colors: [color.opacity(0.28), color.opacity(0.02)], startPoint: .top, endPoint: .bottom))
+                    } else {
+                        Text("采集中…").font(.system(size: 8)).foregroundStyle(.tertiary)
+                            .frame(width: w, height: h, alignment: .center)
+                    }
+                }
+            }
+            HStack {
+                Text(Self.df.string(from: Date().addingTimeInterval(-7 * 86400))).font(.system(size: 7)).foregroundStyle(.tertiary)
+                Spacer()
+                Text("今天").font(.system(size: 7)).foregroundStyle(.tertiary)
+            }
+        }
+    }
+}
+
+struct TrendPanel: View {
+    let samples: [Sample]
+    var body: some View {
+        HStack(spacing: 14) {
+            Sparkline(name: "公众号", color: Color(nsColor: .controlAccentColor), points: samples) { $0.feeds }
+                .frame(width: 140, height: 64)
+            Sparkline(name: "文章", color: .orange, points: samples) { $0.articles }
+                .frame(width: 140, height: 64)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+    }
+}
+
 struct Status {
     var dict: [String: String] = [:]
     var wereadFail: Bool { dict["weread"] == "FAIL" || dict["weread"] == "LOGINERR" }
@@ -55,7 +166,7 @@ struct Status {
     var appDown: Bool { dict["app"] != "OK" || dict["container"] != "UP" }
     var dockerDown: Bool { dict["docker"] == "DOWN" }
     var sliceLeft: Int { Int(dict["slice"] ?? "-1") ?? -1 }
-    var level: Int { dockerDown ? 3 : (appDown ? 3 : (wereadFail || runnerDown ? 2 : 1)) }  // 1正常 2待办 3故障
+    var level: Int { dockerDown ? 3 : (appDown ? 3 : (wereadFail || runnerDown ? 2 : 1)) }
 }
 
 // ---- 可点击通知：真 App 进程 + 事件循环，权限/点击回调均可用 ----
@@ -71,7 +182,6 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
-    // 发通知（同 id 自动替换旧的，不堆积）；action = 点击后执行的动作
     func post(id: String, title: String, body: String, action: String, sound: Bool = true) {
         guard authorized else { return }
         let c = UNUserNotificationCenter.current()
@@ -109,12 +219,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var st = Status()
     var lastLevel = 0
     var prevWereadFail = false
-    var lastWereadNag: Date?          // 待扫码重复提醒节流（30 分钟）
+    var lastWereadNag: Date?
     var lastFaultNag: Date?
+    var lastSample = Date.distantPast
+    var samples: [Sample] = []
     var menu = NSMenu()
 
     func applicationDidFinishLaunching(_ n: Notification) {
         Notifier.shared.bootstrap()
+        samples = History.load()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = "werss …"
         statusItem.button?.toolTip = "微信公众号采集系统"
@@ -135,12 +248,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.lastLevel = self.st.level
             self.st = Status()
             self.st.dict = d
+            // 每 5 分钟采样一次趋势数据
+            if let f = Double(d["feeds"] ?? ""), f >= 0, Date().timeIntervalSince(self.lastSample) > 300 {
+                History.sample(feeds: f, articles: Double(d["articles"] ?? "0") ?? 0)
+                self.lastSample = Date()
+                self.samples = History.load()
+            }
             self.render()
             self.notifyOnTransitions()
         }
     }
 
-    // 状态变化 → 可点击通知（点击直达对应动作）；重复待办 30 分钟节流
     func notifyOnTransitions() {
         let now = Date()
         if st.wereadFail && (!prevWereadFail || lastWereadNag == nil || now.timeIntervalSince(lastWereadNag!) > 1800) {
@@ -157,8 +275,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 action: "repair")
             lastFaultNag = now
         }
-        if !prevWereadFail && st.wereadFail == false && lastLevel >= 2 {
-            // 扫码成功 → 提示已自动恢复
+        if prevWereadFail && !st.wereadFail {
             Notifier.shared.post(id: "werss-recovered",
                 title: "微信读书授权已恢复",
                 body: "文章正文采集将自动继续（≤10 分钟内下一轮补抓生效）",
@@ -198,6 +315,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(mkItem("采集 runner: \(d["runner"] ?? "?")   待采队列: \(d["slice"] ?? "?") 家"))
         menu.addItem(mkItem("订阅: \(d["feeds"] ?? "?")   文章: \(d["articles"] ?? "?")（有正文 \(d["has_content"] ?? "?")）"))
         menu.addItem(mkItem("微信读书授权: \(d["weread"] == "OK" ? "正常" : (d["weread"] == "FAIL" ? "已失效，待扫码" : (d["weread"] ?? "?")) )"))
+
+        // 7 天趋势（公众号 / 文章双曲线）
+        let trendItem = NSMenuItem()
+        let hosting = NSHostingView(rootView: TrendPanel(samples: samples))
+        hosting.frame = NSRect(x: 0, y: 0, width: 320, height: 84)
+        trendItem.view = hosting
+        menu.addItem(trendItem)
 
         if st.wereadFail || st.runnerDown || st.appDown || st.dockerDown {
             menu.addItem(NSMenuItem.separator())
