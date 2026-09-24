@@ -33,7 +33,8 @@ notify() {
   osascript -e "display notification \"${2:-}\" with title \"werss\" subtitle \"${1:-}\" sound name \"Glass\"" >/dev/null 2>&1 || true
 }
 
-docker_ok() { docker info >/dev/null 2>&1; }
+# 所有 docker 调用加超时：引擎半卡死时 CLI 可能无限挂起，不能拖死保活
+docker_ok() { with_timeout 30 docker info >/dev/null 2>&1; }
 
 app_alive() {
   curl -s -o /dev/null -m 5 -w '%{http_code}' "$WERSS_APP_URL/" 2>/dev/null | grep -q '^200$'
@@ -50,7 +51,7 @@ wait_app() {
 }
 
 container_up() {
-  [ "$(docker ps --filter "name=^$WERSS_CONTAINER$" --format '{{.Names}}' 2>/dev/null)" = "$WERSS_CONTAINER" ]
+  [ "$(with_timeout 30 docker ps --filter "name=^$WERSS_CONTAINER$" --format '{{.Names}}' 2>/dev/null)" = "$WERSS_CONTAINER" ]
 }
 
 runner_pid() { pgrep -f "bash .*run_forever.sh" | head -1; }
@@ -86,7 +87,7 @@ start_runner() {
 }
 
 compose() {
-  docker compose --env-file "$WERSS_ROOT/config.env" -f "$WERSS_ROOT/docker-compose.yml" "$@"
+  with_timeout 300 docker compose --env-file "$WERSS_ROOT/config.env" -f "$WERSS_ROOT/docker-compose.yml" "$@"
 }
 
 # 统一启动：Docker → 容器 → 等健康 → runner
