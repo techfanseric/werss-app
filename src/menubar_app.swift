@@ -85,9 +85,10 @@ enum History {
 final class TrendView: NSView {
     var samples: [Sample] = [] { didSet { needsDisplay = true } }
     var articlesSub = "" { didSet { needsDisplay = true } }   // 如 "正文 790"
-    override var intrinsicContentSize: NSSize { NSSize(width: 340, height: 168) }
+    override var intrinsicContentSize: NSSize { NSSize(width: 340, height: 190) }
 
     private func drawSeries(_ rect: NSRect, name: String, color: NSColor, values: [Double], sub: String?, axisBottom: Bool) {
+        // rect 结构：[头行 15][空 4][曲线区][底 8]
         let cur = values.last ?? 0
         let first = values.first ?? cur
         let delta = Int(cur - first)
@@ -110,7 +111,7 @@ final class TrendView: NSView {
         head.draw(at: NSPoint(x: rect.maxX - head.size().width - 2, y: rect.maxY - 13))
 
         // 曲线区
-        let chart = NSRect(x: rect.minX, y: rect.minY + (axisBottom ? 11 : 1), width: rect.width, height: rect.height - 16)
+        let chart = NSRect(x: rect.minX, y: rect.minY + (axisBottom ? 10 : 5), width: rect.width, height: rect.height - 24)
         guard values.count >= 2 else {
             ("采集中…" as NSString).draw(in: chart, withAttributes: [.font: NSFont.systemFont(ofSize: 8), .foregroundColor: NSColor.tertiaryLabelColor])
             return
@@ -141,9 +142,9 @@ final class TrendView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         let feeds = samples.map { $0.feeds }
         let articles = samples.map { $0.articles }
-        let inner = NSRect(x: bounds.minX + 14, y: bounds.minY + 2, width: bounds.width - 28, height: bounds.height - 4)
-        let rowH = inner.height / 2
-        drawSeries(NSRect(x: inner.minX, y: inner.minY + rowH + 3, width: inner.width, height: rowH),
+        let inner = NSRect(x: bounds.minX + 14, y: bounds.minY + 6, width: bounds.width - 28, height: bounds.height - 14)
+        let rowH = (inner.height - 16) / 2   // 16 = 两行之间的间隔
+        drawSeries(NSRect(x: inner.minX, y: inner.minY + rowH + 16, width: inner.width, height: rowH),
                    name: "公众号", color: .controlAccentColor, values: feeds, sub: nil, axisBottom: false)
         drawSeries(NSRect(x: inner.minX, y: inner.minY, width: inner.width, height: rowH),
                    name: "文章", color: .systemOrange, values: articles, sub: articlesSub.isEmpty ? nil : articlesSub, axisBottom: true)
@@ -301,22 +302,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let m = NSMenuItem(title: title, action: action, keyEquivalent: "")
         m.target = action == nil ? nil : self
         m.isEnabled = action != nil
-        if bold { m.attributedTitle = NSAttributedString(string: title, attributes: [.font: NSFont.boldSystemFont(ofSize: 13)]) }
+        if bold { m.attributedTitle = NSAttributedString(string: title, attributes: [.font: NSFont.boldSystemFont(ofSize: 12)]) }
         return m
     }
 
     func rebuildMenu() {
         menu.removeAllItems()
+        menu.font = NSFont.systemFont(ofSize: 12)
         let d = st.dict
-        menu.addItem(mkItem("Docker: \(d["docker"] ?? "?")   容器: \(d["container"] ?? "?")   应用: \(d["app"] ?? "?")"))
-        menu.addItem(mkItem("采集 runner: \(d["runner"] ?? "?")   待采队列: \(d["slice"] ?? "?") 家\(d["throttled"] == "yes" ? "（限流冷却中）" : "")"))
+        // 行1 组件健康 | 行2 采集与资源 | 行3 授权与限流
+        menu.addItem(mkItem("Docker \(d["docker"] ?? "?") · 容器 \(d["container"] ?? "?") · 应用 \(d["app"] ?? "?") · ego \(d["ego"] ?? "?")"))
+        menu.addItem(mkItem("runner \(d["runner"] ?? "?") · 待采 \(d["slice"] ?? "?") 家 · 磁盘 \(d["disk_gb"] ?? "?")G · 备份 \(d["backup_days"] ?? "?")天前"))
         // 订阅/文章当前值由趋势图头行展示，不再重复列文字行
-        menu.addItem(mkItem("微信读书授权: \(d["weread"] == "OK" ? "正常" : (d["weread"] == "FAIL" ? "已失效，待扫码" : (d["weread"] ?? "?")) )"))
-        menu.addItem(mkItem("ego: \(d["ego"] ?? "?")   磁盘可用: \(d["disk_gb"] ?? "?")G   最近备份: \(d["backup_days"] ?? "?")天前"))
+        menu.addItem(mkItem("微信读书授权 \(d["weread"] == "OK" ? "正常" : (d["weread"] == "FAIL" ? "失效待扫码" : (d["weread"] ?? "?"))) · 限流 \(d["throttled"] == "yes" ? "冷却中" : "无")"))
 
         // 7 天趋势（公众号 / 文章双曲线）
         let trendItem = NSMenuItem()
-        let trend = TrendView(frame: NSRect(x: 0, y: 0, width: 340, height: 168))
+        let trend = TrendView(frame: NSRect(x: 0, y: 0, width: 340, height: 190))
         trend.samples = samples
         trend.articlesSub = d["has_content"].flatMap { Int($0).map { "正文 \($0)" } } ?? ""
         trendItem.view = trend
