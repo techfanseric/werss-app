@@ -50,7 +50,7 @@ func runShCapture(_ cmd: String, timeout: Double, done: @escaping (String) -> Vo
 }
 
 // ---- 7 天历史采样：logs/history.tsv，每行 "unix feeds articles" ----
-struct Sample { let t: Date; let feeds: Double; let articles: Double }
+struct Sample { let t: Date; let feeds: Double; let articles: Double; let hc: Double? }
 
 enum History {
     static let file = root + "/logs/history.tsv"
@@ -61,46 +61,56 @@ enum History {
         return s.split(separator: "\n").compactMap { line in
             let p = line.split(separator: "\t")
             guard p.count >= 3, let t = TimeInterval(p[0]), let f = Double(p[1]), let a = Double(p[2]) else { return nil }
+            let hc = p.count >= 4 ? Double(p[3]) : nil
             let d = Date(timeIntervalSince1970: t)
-            return d >= cutoff ? Sample(t: d, feeds: f, articles: a) : nil
+            return d >= cutoff ? Sample(t: d, feeds: f, articles: a, hc: hc) : nil
         }.sorted { $0.t < $1.t }
     }
 
-    static func sample(feeds: Double, articles: Double) {
+    static func sample(feeds: Double, articles: Double, hc: Double?) {
         var lines = (try? String(contentsOfFile: file, encoding: .utf8)) ?? ""
         let cutoff = Date().addingTimeInterval(-8 * 86400).timeIntervalSince1970
         var kept: [String] = []
         for line in lines.split(separator: "\n") {
             if let t = line.split(separator: "\t").first, let v = TimeInterval(t), v >= cutoff { kept.append(String(line)) }
         }
-        kept.append("\(Int(Date().timeIntervalSince1970))\t\(Int(feeds))\t\(Int(articles))")
+        var row = "\(Int(Date().timeIntervalSince1970))\t\(Int(feeds))\t\(Int(articles))"
+        if let hc = hc { row += "\t\(Int(hc))" }
+        kept.append(row)
         try? kept.joined(separator: "\n").write(toFile: file, atomically: true, encoding: .utf8)
     }
 }
 
-// ---- 7 天趋势图（纯 AppKit 自绘，两栏：公众号 / 文章）----
+// ---- 7 天趋势图（纯 AppKit 自绘，上下两行：公众号 / 文章，各自占满整行宽）----
 final class TrendView: NSView {
     var samples: [Sample] = [] { didSet { needsDisplay = true } }
-    override var intrinsicContentSize: NSSize { NSSize(width: 320, height: 92) }
+    var articlesSub = "" { didSet { needsDisplay = true } }   // 如 "正文 790"
+    override var intrinsicContentSize: NSSize { NSSize(width: 340, height: 168) }
 
-    private func series(_ rect: NSRect, name: String, color: NSColor, values: [Double]) {
-        // 头行：色点 + 名称 + 当前值 + 7天增量
+    private func drawSeries(_ rect: NSRect, name: String, color: NSColor, values: [Double], sub: String?, axisBottom: Bool) {
         let cur = values.last ?? 0
         let first = values.first ?? cur
         let delta = Int(cur - first)
         let deltaText = delta == 0 ? "持平" : (delta > 0 ? "+\(delta)" : "\(delta)")
         let para = NSMutableParagraphStyle(); para.lineBreakMode = .byClipping
+
+        // 头行：色点 名称 [副信息] …… 当前值 7天增量（右对齐组合串，防叠字）
         color.setFill()
         NSBezierPath(roundedRect: NSRect(x: rect.minX, y: rect.maxY - 9, width: 6, height: 6), xRadius: 2, yRadius: 2).fill()
-        (name as NSString).draw(at: NSPoint(x: rect.minX + 10, y: rect.maxY - 12),
-            withAttributes: [.font: NSFont.boldSystemFont(ofSize: 10), .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: para])
+        let nameAttrs: [NSAttributedString.Key: Any] = [.font: NSFont.boldSystemFont(ofSize: 10), .foregroundColor: NSColor.secondaryLabelColor]
+        (name as NSString).draw(at: NSPoint(x: rect.minX + 10, y: rect.maxY - 12), withAttributes: nameAttrs)
+        if let sub = sub, !sub.isEmpty {
+            let nx = rect.minX + 10 + (name as NSString).size(withAttributes: nameAttrs).width + 6
+            (sub as NSString).draw(at: NSPoint(x: nx, y: rect.maxY - 12),
+                withAttributes: [.font: NSFont.systemFont(ofSize: 8), .foregroundColor: NSColor.tertiaryLabelColor])
+        }
         let head = NSMutableAttributedString()
         head.append(NSAttributedString(string: "\(Int(cur))", attributes: [.font: NSFont.boldSystemFont(ofSize: 12), .foregroundColor: NSColor.labelColor]))
         head.append(NSAttributedString(string: "  7天\(deltaText)", attributes: [.font: NSFont.systemFont(ofSize: 8), .foregroundColor: delta >= 0 ? NSColor.systemGreen : NSColor.systemOrange]))
         head.draw(at: NSPoint(x: rect.maxX - head.size().width - 2, y: rect.maxY - 13))
 
         // 曲线区
-        let chart = NSRect(x: rect.minX, y: rect.minY + 12, width: rect.width, height: rect.height - 28)
+        let chart = NSRect(x: rect.minX, y: rect.minY + (axisBottom ? 11 : 1), width: rect.width, height: rect.height - 16)
         guard values.count >= 2 else {
             ("采集中…" as NSString).draw(in: chart, withAttributes: [.font: NSFont.systemFont(ofSize: 8), .foregroundColor: NSColor.tertiaryLabelColor])
             return
@@ -111,9 +121,7 @@ final class TrendView: NSView {
         let t1 = Date().timeIntervalSince1970
         let t0 = t1 - 7 * 86400   // 固定 7 天窗口
         func pt(_ i: Int) -> NSPoint {
-            let ts = Date().timeIntervalSince1970 - (t1 - self.samples[i].t.timeIntervalSince1970)
-            _ = ts
-            let x = chart.minX + chart.width * CGFloat(max(0, min(1, (self.samples[i].t.timeIntervalSince1970 - t0) / (t1 - t0))))
+            let x = chart.minX + chart.width * CGFloat(max(0, min(1, (samples[i].t.timeIntervalSince1970 - t0) / (t1 - t0))))
             let y = chart.minY + chart.height * CGFloat(max(0.02, min(0.98, (values[i] - vmin) / (vmax - vmin))))
             return NSPoint(x: x, y: y)
         }
@@ -133,15 +141,18 @@ final class TrendView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         let feeds = samples.map { $0.feeds }
         let articles = samples.map { $0.articles }
-        let half = NSRect(x: bounds.minX + 14, y: bounds.minY + 2, width: (bounds.width - 42) / 2, height: bounds.height - 4)
-        series(half, name: "公众号", color: .controlAccentColor, values: feeds)
-        series(half.offsetBy(dx: half.width + 14, dy: 0), name: "文章", color: .systemOrange, values: articles)
-        // 底部时间轴
+        let inner = NSRect(x: bounds.minX + 14, y: bounds.minY + 2, width: bounds.width - 28, height: bounds.height - 4)
+        let rowH = inner.height / 2
+        drawSeries(NSRect(x: inner.minX, y: inner.minY + rowH + 3, width: inner.width, height: rowH),
+                   name: "公众号", color: .controlAccentColor, values: feeds, sub: nil, axisBottom: false)
+        drawSeries(NSRect(x: inner.minX, y: inner.minY, width: inner.width, height: rowH),
+                   name: "文章", color: .systemOrange, values: articles, sub: articlesSub.isEmpty ? nil : articlesSub, axisBottom: true)
+        // 底部时间轴（整图一条）
         let f = DateFormatter(); f.dateFormat = "MM/dd"
         let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 7), .foregroundColor: NSColor.tertiaryLabelColor]
         (f.string(from: Date().addingTimeInterval(-7 * 86400)) as NSString)
-            .draw(at: NSPoint(x: bounds.minX + 14, y: bounds.minY + 1), withAttributes: attrs)
-        ("今天" as NSString).draw(at: NSPoint(x: bounds.maxX - 130, y: bounds.minY + 1), withAttributes: attrs)
+            .draw(at: NSPoint(x: inner.minX, y: inner.minY + 1), withAttributes: attrs)
+        ("今天" as NSString).draw(at: NSPoint(x: inner.maxX - 24, y: inner.minY + 1), withAttributes: attrs)
     }
 }
 
@@ -236,7 +247,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.st.dict = d
             // 每 5 分钟采样一次趋势数据
             if let f = Double(d["feeds"] ?? ""), f >= 0, Date().timeIntervalSince(self.lastSample) > 300 {
-                History.sample(feeds: f, articles: Double(d["articles"] ?? "0") ?? 0)
+                History.sample(feeds: f, articles: Double(d["articles"] ?? "0") ?? 0, hc: Double(d["has_content"] ?? "") ?? nil)
                 self.lastSample = Date()
                 self.samples = History.load()
             }
@@ -298,14 +309,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.removeAllItems()
         let d = st.dict
         menu.addItem(mkItem("Docker: \(d["docker"] ?? "?")   容器: \(d["container"] ?? "?")   应用: \(d["app"] ?? "?")"))
-        menu.addItem(mkItem("采集 runner: \(d["runner"] ?? "?")   待采队列: \(d["slice"] ?? "?") 家"))
+        menu.addItem(mkItem("采集 runner: \(d["runner"] ?? "?")   待采队列: \(d["slice"] ?? "?") 家\(d["throttled"] == "yes" ? "（限流冷却中）" : "")"))
         // 订阅/文章当前值由趋势图头行展示，不再重复列文字行
         menu.addItem(mkItem("微信读书授权: \(d["weread"] == "OK" ? "正常" : (d["weread"] == "FAIL" ? "已失效，待扫码" : (d["weread"] ?? "?")) )"))
+        menu.addItem(mkItem("ego: \(d["ego"] ?? "?")   磁盘可用: \(d["disk_gb"] ?? "?")G   最近备份: \(d["backup_days"] ?? "?")天前"))
 
         // 7 天趋势（公众号 / 文章双曲线）
         let trendItem = NSMenuItem()
-        let trend = TrendView(frame: NSRect(x: 0, y: 0, width: 320, height: 92))
+        let trend = TrendView(frame: NSRect(x: 0, y: 0, width: 340, height: 168))
         trend.samples = samples
+        trend.articlesSub = d["has_content"].flatMap { Int($0).map { "正文 \($0)" } } ?? ""
         trendItem.view = trend
         menu.addItem(trendItem)
 

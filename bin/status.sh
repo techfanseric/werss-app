@@ -43,6 +43,37 @@ print(db.execute('select count(*) from feeds').fetchone()[0],
 " 2>/dev/null) && { set -- $OUT; FEEDS=$1; ARTICLES=$2; HAS_CONTENT=$3; }
 fi
 
+# ego 浏览器（CLI 存在 + 应用进程存活）
+if [ -x "$HOME/.local/bin/ego-browser" ] && pgrep -f "ego lite.app/Contents" >/dev/null 2>&1; then E=OK; else E=DOWN; fi
+
+# 磁盘可用（根卷 GB）与最近备份天数
+DISK_GB=$(df -g / 2>/dev/null | awk 'NR==2{print $4}')
+BK_DAYS=-1
+NEWEST=$(ls -t "$WERSS_ROOT"/backups/werss-backup-*.tar.gz 2>/dev/null | head -1)
+[ -n "$NEWEST" ] && BK_DAYS=$(( ( $(date +%s) - $(stat -f %m "$NEWEST") ) / 86400 ))
+
+# 限流冷却（最近 1 小时 runner.log 有 search_throttled）
+TH=no
+if [ -f "$BATCH/runner.log" ]; then
+  TH=$(python3 - "$BATCH/runner.log" <<'ENDPY'
+import sys, re, datetime
+now = datetime.datetime.now()
+last = None
+for line in open(sys.argv[1], encoding='utf-8', errors='ignore'):
+    if 'search_throttled' in line:
+        m = re.match(r'(\d\d)-(\d\d) (\d\d):(\d\d):(\d\d)', line)
+        if m:
+            try:
+                t = datetime.datetime(now.year, int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4)), int(m.group(5)))
+                if t > now: t = t.replace(year=now.year - 1)
+                last = max(last, t) if last else t
+            except Exception:
+                pass
+print('yes' if last and (now - last).total_seconds() < 3600 else 'no')
+ENDPY
+)
+fi
+
 # weread 授权
 WR=UNKNOWN
 if app_alive; then
@@ -72,9 +103,14 @@ feeds=$FEEDS
 articles=$ARTICLES
 has_content=$HAS_CONTENT
 weread=$WR
+ego=$E
+disk_gb=$DISK_GB
+backup_days=$BK_DAYS
+throttled=$TH
 EOF
   exit 0
 fi
 
 echo "$D $C $A $R | slice剩余$SLICE | CSV 已添加$CSV_ADDED/未找到$CSV_NOTFOUND/待处理$CSV_PENDING | 订阅$FEEDS 文章$ARTICLES 有正文$HAS_CONTENT"
 [ "$WR" = "OK" ] && echo "weread授权:OK" || echo "weread授权:$WR(需扫码)"
+echo "ego:$E 磁盘可用:${DISK_GB}G 最近备份:${BK_DAYS}天前 限流:$TH"
