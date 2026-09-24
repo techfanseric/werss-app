@@ -157,6 +157,50 @@ final class TrendView: NSView {
     }
 }
 
+// 状态行：左侧文字 + 右侧刷新图标按钮（点击即重新拉取状态）
+final class StatusRowView: NSView {
+    var onRefresh: (() -> Void)?
+    private let label: NSTextField
+    private let button: NSButton
+
+    init(text: String) {
+        label = NSTextField(labelWithString: text)
+        label.font = NSFont.systemFont(ofSize: 12)
+        label.textColor = .labelColor
+        label.lineBreakMode = .byClipping
+        let icon = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "刷新")?
+            .withSymbolConfiguration(.init(pointSize: 11, weight: .medium)) ?? NSImage()
+        button = NSButton(image: icon, target: nil, action: nil)
+        button.isBordered = false
+        button.imagePosition = .imageOnly
+        button.contentTintColor = .secondaryLabelColor
+        button.toolTip = "刷新状态"
+        super.init(frame: NSRect(x: 0, y: 0, width: 340, height: 18))
+        addSubview(label)
+        addSubview(button)
+        button.target = self
+        button.action = #selector(clickRefresh)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func layout() {
+        super.layout()
+        label.sizeToFit()
+        label.frame.origin = NSPoint(x: 0, y: (frame.height - label.frame.height) / 2)
+        button.frame.size = NSSize(width: 18, height: 16)
+        button.frame.origin = NSPoint(x: frame.width - 20, y: (frame.height - 16) / 2)
+    }
+
+    @objc private func clickRefresh() {
+        button.contentTintColor = .controlAccentColor
+        onRefresh?()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            self?.button.contentTintColor = .secondaryLabelColor
+        }
+    }
+}
+
 struct Status {
     var dict: [String: String] = [:]
     var wereadFail: Bool { dict["weread"] == "FAIL" || dict["weread"] == "LOGINERR" }
@@ -310,8 +354,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.removeAllItems()
         menu.font = NSFont.systemFont(ofSize: 12)
         let d = st.dict
-        // 行1 组件健康 | 行2 采集与资源 | 行3 授权与限流
-        menu.addItem(mkItem("Docker \(d["docker"] ?? "?") · 容器 \(d["container"] ?? "?") · 应用 \(d["app"] ?? "?") · ego \(d["ego"] ?? "?")"))
+        // 行1 组件健康（右侧内嵌刷新图标按钮）
+        let row1 = StatusRowView(text: "Docker \(d["docker"] ?? "?") · 容器 \(d["container"] ?? "?") · 应用 \(d["app"] ?? "?") · ego \(d["ego"] ?? "?")")
+        row1.onRefresh = { [weak self] in self?.refreshNow() }
+        row1.frame = NSRect(x: 0, y: 0, width: 340, height: 18)
+        let row1Item = NSMenuItem()
+        row1Item.view = row1
+        menu.addItem(row1Item)
         menu.addItem(mkItem("runner \(d["runner"] ?? "?") · 待采 \(d["slice"] ?? "?") 家 · 磁盘 \(d["disk_gb"] ?? "?")G · 备份 \(d["backup_days"] ?? "?")天前"))
         // 订阅/文章当前值由趋势图头行展示，不再重复列文字行
         menu.addItem(mkItem("微信读书授权 \(d["weread"] == "OK" ? "正常" : (d["weread"] == "FAIL" ? "失效待扫码" : (d["weread"] ?? "?"))) · 限流 \(d["throttled"] == "yes" ? "冷却中" : "无")"))
@@ -340,7 +389,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(mkItem("交接导出（打备份包）", action: #selector(doExport)))
         menu.addItem(mkItem("交接导入（选备份包）", action: #selector(doImport)))
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(mkItem("刷新状态", action: #selector(refreshNow)))
         menu.addItem(mkItem("退出菜单栏", action: #selector(quit)))
         statusItem.menu = menu
     }
