@@ -1,0 +1,8 @@
+#!/bin/bash
+# 双击控制台：确保全套运行 → 弹状态通知 → 打开管理页
+APP_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+. "$APP_DIR/bin/lib.sh"
+bash "$APP_DIR/bin/start.sh" >/dev/null 2>&1
+STAT=$(bash "$APP_DIR/bin/status.sh" 2>/dev/null | head -1)
+notify "WERSS 状态" "${STAT:-状态未知}"
+open "$WERSS_APP_URL/"

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.werss.keepalive</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__ROOT__/bin/keepalive.sh</string>
+    </array>
+    <!-- 登录即执行一次（开机自动恢复全套），之后每 30 分钟保活 -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StartInterval</key>
+    <integer>1800</integer>
+    <key>StandardOutPath</key>
+    <string>__ROOT__/logs/launchd-keepalive.log</string>
+    <key>StandardErrorPath</key>
+    <string>__ROOT__/logs/launchd-keepalive.log</string>
+</dict>
+</plist>

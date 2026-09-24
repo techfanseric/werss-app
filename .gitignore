@@ -1,0 +1,19 @@
+# 数据与运行时状态不入库（数据走备份包交接，见 bin/export.sh）
+data/
+companies.csv
+backups/
+logs/
+.DS_Store
+
+# batch 目录只跟踪代码，运行时产物全部忽略
+batch/*
+!batch/*.sh
+!batch/*.py
+!batch/*.js
+!batch/*.template
+!batch/canary_pool.json
+
+# 生成的临时文件
+*.gen.js
+*.tar.gz
+__pycache__/

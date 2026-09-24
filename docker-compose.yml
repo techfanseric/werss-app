@@ -1,0 +1,15 @@
+# we-mp-rss 容器定义（由 bin/ 脚本统一调用：docker compose --env-file config.env -f docker-compose.yml ...）
+# 相对路径 ./data 以本文件所在目录为基准，整个目录拷到任何机器都成立。
+services:
+  we-mp-rss:
+    image: ${WERSS_IMAGE}
+    container_name: ${WERSS_CONTAINER}
+    ports:
+      - "${WERSS_PORT}:8001"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - GATHER.CONTENT=True
+      - GATHER.CONTENT_BATCH_SIZE=30
+      - GATHER.MODEL=weread_mp
+    restart: unless-stopped

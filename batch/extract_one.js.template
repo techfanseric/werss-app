@@ -1,0 +1,34 @@
+import fs from "node:fs";
+// __W__ 由 run_recovery.sh 渲染为本 batch 目录绝对路径(ego 文件重定向方式不便于注入环境变量)
+const W = "__W__";
+const item = JSON.parse(fs.readFileSync(`${W}/current_item.json`, "utf8"));
+let task;
+try { task = await taskSpace(parseInt(fs.readFileSync(`${W}/space_rec.id`, "utf8"))); }
+catch (e) { task = await taskSpace("werss-recovery"); fs.writeFileSync(`${W}/space_rec.id`, String(task.spaceId)); }
+
+// 复用已有页面(避免页面预算耗尽)
+let page;
+const ps = await task.pages();
+page = ps.length ? ps[ps.length - 1] : await task.newPage();
+
+let navigated = false;
+try {
+  await page.goto(item.url);
+  await page.waitForLoadState();
+  navigated = true;
+} catch (e) { navigated = false; }
+if (!navigated) {
+  // 导航失败才换新页面重试一次
+  try { await page.close().catch(() => {}); } catch {}
+  page = await task.newPage();
+  await page.goto(item.url);
+  await page.waitForLoadState();
+}
+await page.waitForTimeout(3000);
+const data = await page.evaluate(() => {
+  const jc = document.querySelector('#js_content');
+  if (!jc) return { dead: true, title: document.title.slice(0, 40), html: "" };
+  return { dead: false, title: document.title.slice(0, 40), html: jc.innerHTML, textLen: jc.textContent.trim().length };
+});
+fs.writeFileSync(`${W}/current_result.json`, JSON.stringify({ id: item.id, url: item.url, title: item.title, ...data }));
+console.log("EXTRACTED dead=" + data.dead + " htmlLen=" + (data.html || "").length);
