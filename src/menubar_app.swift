@@ -273,7 +273,8 @@ final class TrendView: NSView {
 
         func drawLegend(_ y: CGFloat, label: String, color: NSColor, value: Double) {
             color.setFill()
-            NSBezierPath(ovalIn: NSRect(x: rect.minX + 2, y: y - dotR, width: dotR * 2, height: dotR * 2)).fill()
+            // 圆点上移 2px，让 visual center 跟文字（10pt baseline）一致（不"掉下去"）
+            NSBezierPath(ovalIn: NSRect(x: rect.minX + 2, y: y - dotR + 2, width: dotR * 2, height: dotR * 2)).fill()
             (label as NSString).draw(at: NSPoint(x: rect.minX + 11, y: y - 4), withAttributes: labelAttrs)
             let valTxt = pieValid ? "\(Int(value))" : "?"
             (valTxt as NSString).draw(at: NSPoint(x: rect.maxX - 2 - (valTxt as NSString).size(withAttributes: valueAttrs).width, y: y - 5),
@@ -309,18 +310,7 @@ final class StatusRowView: NSView {
         label.font = NSFont.systemFont(ofSize: 10)
         label.textColor = .secondaryLabelColor
         label.lineBreakMode = .byClipping
-        var b: NSButton? = nil
-        if showRefresh {
-            let icon = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "刷新")?
-                .withSymbolConfiguration(.init(pointSize: 11, weight: .medium)) ?? NSImage()
-            let btn = NSButton(image: icon, target: nil, action: nil)
-            btn.isBordered = false
-            btn.imagePosition = .imageOnly
-            btn.contentTintColor = .secondaryLabelColor
-            btn.toolTip = "刷新状态"
-            b = btn
-        }
-        button = b
+        button = Self.makeRefreshButton(showRefresh)
         super.init(frame: NSRect(x: 0, y: 0, width: 340, height: 18))
         addSubview(label)
         if let button = button {
@@ -328,6 +318,32 @@ final class StatusRowView: NSView {
             button.target = self
             button.action = #selector(clickRefresh)
         }
+    }
+
+    init(attributedText: NSAttributedString, showRefresh: Bool = false) {
+        label = NSTextField(labelWithAttributedString: attributedText)
+        label.font = NSFont.systemFont(ofSize: 10)
+        label.lineBreakMode = .byClipping
+        button = Self.makeRefreshButton(showRefresh)
+        super.init(frame: NSRect(x: 0, y: 0, width: 340, height: 18))
+        addSubview(label)
+        if let button = button {
+            addSubview(button)
+            button.target = self
+            button.action = #selector(clickRefresh)
+        }
+    }
+
+    private static func makeRefreshButton(_ show: Bool) -> NSButton? {
+        guard show else { return nil }
+        let icon = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "刷新")?
+            .withSymbolConfiguration(.init(pointSize: 11, weight: .medium)) ?? NSImage()
+        let btn = NSButton(image: icon, target: nil, action: nil)
+        btn.isBordered = false
+        btn.imagePosition = .imageOnly
+        btn.contentTintColor = .secondaryLabelColor
+        btn.toolTip = "刷新状态"
+        return btn
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -554,6 +570,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item.view = row
             menu.addItem(item)
         }
+        func addStatusRow(_ attributedText: NSAttributedString, refresh: Bool = false) {
+            let row = StatusRowView(attributedText: attributedText, showRefresh: refresh)
+            if refresh { row.onRefresh = { [weak self] in self?.refreshNow() } }
+            row.frame = NSRect(x: 0, y: 0, width: 340, height: 18)
+            let item = NSMenuItem()
+            item.view = row
+            menu.addItem(item)
+        }
+        // 顶部：Ego 操作最新 3 条过程日志（来自 batch/log_<N>.txt），跟其它状态行保持一致字号/对齐，前面加彩色小圆点区分类型
+        let recentLogs = readLastProcessLog()
+        if !recentLogs.isEmpty {
+            menu.addItem(NSMenuItem.separator())
+            for entry in recentLogs.prefix(3) {
+                addStatusRow(makeLogAttributedString(entry))
+            }
+        }
         addStatusRow("Docker \(d["docker"] ?? "?") · 容器 \(d["container"] ?? "?") · 应用 \(d["app"] ?? "?") · ego \(d["ego"] ?? "?")", refresh: true)
         // 公众号进度：已采(csv_added) + 待采(csv_pending) + 未找到(csv_notfound) = 公司总数
         // 用 CSV 台账口径，不用 feeds/slice，因为 feeds/slice 都漏算 csv_notfound
@@ -609,6 +641,80 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func refreshNow() { statusItem.button?.title = "werss …"; refresh() }
+
+    // 读 batch/log_<N>.txt 里 mtime 最新那份的最后 3 行，解析成 (LogEntry 类型, 显示文本) 列表
+    // 返回最新 3 条（最新在最前）；workerN 从文件名提取（log_1.txt → 1）
+    private enum LogKind { case added, notFound, paused }
+    private struct LogEntry { let kind: LogKind; let text: String }
+    private func readLastProcessLog() -> [LogEntry] {
+        let logDir = root + "/batch"
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(atPath: logDir) else { return [] }
+        var newest: (path: String, mtime: Date)?
+        for f in files {
+            guard f.hasPrefix("log_") && f.hasSuffix(".txt") else { continue }
+            let path = "\(logDir)/\(f)"
+            guard let attrs = try? fm.attributesOfItem(atPath: path),
+                  let mtime = attrs[.modificationDate] as? Date else { continue }
+            if newest == nil || mtime > newest!.mtime { newest = (path, mtime) }
+        }
+        guard let logFile = newest?.path,
+              let content = try? String(contentsOf: URL(fileURLWithPath: logFile), encoding: .utf8) else { return [] }
+        let lines = content.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+        let recent = Array(lines.suffix(3)).reversed()   // 最新 3 条在最前
+        let stem = (logFile as NSString).lastPathComponent  // "log_1.txt"
+        let workerNum = stem.replacingOccurrences(of: "log_", with: "").replacingOccurrences(of: ".txt", with: "")
+        return recent.map { parseProcessLog($0, workerNum: workerNum) }
+    }
+
+    // 解析一行原始日志 → (类型, "HH:MM workerN 暂停 Xs" / "已添加 name" / "未找到")
+    private func parseProcessLog(_ line: String, workerNum: String) -> LogEntry {
+        let parts = line.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: false)
+        guard parts.count >= 2 else { return LogEntry(kind: .paused, text: line) }
+        let time = String(parts[0]).prefix(5)   // HH:MM（去掉秒）
+        let rest = String(parts[1]).trimmingCharacters(in: .whitespaces)
+        // [workerN 随机休息 Xs]
+        if rest.hasPrefix("[") {
+            let pattern = #"\[worker\d+ 随机休息 (\d+)s\]"#
+            if let m = rest.range(of: pattern, options: .regularExpression) {
+                let secs = rest[m].replacingOccurrences(of: #"\[worker\d+ 随机休息 (\d+)s\]"#, with: "$1", options: .regularExpression)
+                return LogEntry(kind: .paused, text: "\(time) worker\(workerNum) 暂停 \(secs)s")
+            }
+            return LogEntry(kind: .paused, text: "\(time) worker\(workerNum) \(rest)")
+        }
+        // C0xxxx|已添加|name / C0xxxx|未找到|尝试:...
+        let fields = rest.components(separatedBy: "|")
+        if fields.count >= 3 {
+            if fields[1] == "已添加" { return LogEntry(kind: .added, text: "\(time) worker\(workerNum) 已添加 \(fields[2])") }
+            if fields[1] == "未找到" {
+                // fields[2] 形如 "尝试:kw1;kw2;kw3;..." —— 拆出关键字，前 3 个用 " / " 连接，超出用 …
+                let raw = fields[2]
+                let stripped = raw.hasPrefix("尝试:") ? String(raw.dropFirst("尝试:".count)) : raw
+                let kws = stripped.split(separator: ";").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+                let show = kws.prefix(3).joined(separator: " / ")
+                let suffix = kws.count > 3 ? "…" : ""
+                let kwStr = show.isEmpty ? "" : " 尝试: \(show)\(suffix)"
+                return LogEntry(kind: .notFound, text: "\(time) worker\(workerNum) 未找到\(kwStr)")
+            }
+        }
+        return LogEntry(kind: .paused, text: "\(time) worker\(workerNum) \(rest)")
+    }
+
+    // 把一条日志条目渲染成 NSAttributedString：前面加一个小小的右箭头 ▸（8pt tertiaryLabelColor，提示这是日志条目，不抢眼）
+    private func makeLogAttributedString(_ entry: LogEntry) -> NSAttributedString {
+        let textAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 10),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ]
+        let arrowAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 13, weight: .medium),
+            .foregroundColor: NSColor.tertiaryLabelColor,
+        ]
+        let result = NSMutableAttributedString()
+        result.append(NSAttributedString(string: "› ", attributes: arrowAttrs))   // 线性右箭头 + 空格
+        result.append(NSAttributedString(string: entry.text, attributes: textAttrs))
+        return result
+    }
     @objc func openReview() { ReviewWindowController.shared.show() }
     @objc func openAdmin() { runSh("open http://localhost:8001/") }
     @objc func openScan() {
