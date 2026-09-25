@@ -83,6 +83,11 @@ else
   ok=0
 fi
 
+# ---- 4.5 招聘帖扫描（规则粗筛 + MiniMax 精判，见 bin/jobs.py；新帖 → 菜单栏 ● 提醒）----
+if [ -f "$WERSS_ROOT/data/db.db" ]; then
+  python3 "$WERSS_ROOT/bin/jobs.py" scan --quiet >> "$LOGS/jobs_scan.log" 2>&1 || true
+fi
+
 # ---- 5. 每日一次自动更新检查（GitHub Release，见 bin/update.sh）----
 if [ "$(date +%F)" != "$(cat "$LOGS/.last-update-check" 2>/dev/null)" ]; then
   date +%F > "$LOGS/.last-update-check"

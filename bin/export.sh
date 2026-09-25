@@ -74,9 +74,39 @@ fi
 # ---- 4. 恢复运行 ----
 log "[export] 恢复容器与 runner…"
 compose up -d
-wait_app 300 || notify_important app "导出后恢复失败" "容器已启动但应用未就绪，请检查"
+RESTORE_OK=1
+wait_app 300 || { RESTORE_OK=; notify_important app "导出后恢复失败" "容器已启动但应用未就绪，请检查"; }
 start_runner
 
-MANIFEST=$(tar -xzOf "$OUT" manifest.json 2>/dev/null | python3 -c "import sys,json;m=json.load(sys.stdin);print(f\"订阅{m.get('feeds','?')} 文章{m.get('articles','?')} 待采{m.get('slice_remaining','?')}\")" 2>/dev/null)
-notify "备份完成" "$OUT ($SIZE)｜$MANIFEST"
-log "[export] 完成: $MANIFEST"
+# ---- 5. 完成汇总与交接引导（数字取自备份包内 manifest，即导入侧核对的同一基准）----
+# 注意：括号串在 python 里拼好，bash 侧只做 ${PROGRESS} 直接替换——
+# bash(3.2) 的 ${var:+…$var…} 同名嵌套展开会截坏多字节字符，不能用。
+META=$(tar -xzOf "$OUT" manifest.json 2>/dev/null | python3 -c "
+import sys, json
+m = json.load(sys.stdin)
+c = m.get('csv') or {}
+done = c.get('已添加', 0) + c.get('未找到', 0)
+total = done + c.get('待处理', 0)
+prog = f'（共{total}家、已处理{done}、进度约{round(done * 100 / total)}%，队列随采集减少）' if total else ''
+print(m.get('feeds', '?'), m.get('articles', '?'), m.get('slice_remaining', '?'), prog, sep='|')
+" 2>/dev/null)
+IFS='|' read -r FEEDS ARTICLES SLICE_LEFT PROGRESS <<< "$META"
+: "${FEEDS:=?}" "${ARTICLES:=?}" "${SLICE_LEFT:=?}"
+notify "备份完成" "$OUT ($SIZE)｜下一步: 拷到新机放入 backups/ 双击交接导入"
+
+BAR=$(printf '━%.0s' {1..44})
+echo; echo "$BAR"
+if [ -n "$RESTORE_OK" ]; then
+  echo "✅ 备份完成，采集已恢复运行（开头几行是导出前的系统体检，与备份结果无关）"
+else
+  echo "⚠️ 备份完成，但容器恢复未就绪——备份包本身有效，请按上方通知排查"
+fi
+echo
+echo "备份包: $OUT ($SIZE)"
+echo "快照: 订阅${FEEDS} · 文章${ARTICLES} · 待采${SLICE_LEFT}${PROGRESS}"
+echo
+echo "交接两步:"
+echo "  旧机: 把上面这个备份包发给新机（AirDrop/U盘均可）"
+echo "  新机: 先装好 werss-app（安装.command）→ 备份包放入 backups/ → 双击 交接导入.command 直接回车"
+echo "导入后自动核对数字，本机数据只挪不删。此窗口可关闭。"
+echo "$BAR"

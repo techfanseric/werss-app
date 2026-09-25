@@ -35,9 +35,14 @@ TAG=$(printf '%s' "$REL" | python3 -c 'import sys,json;print(json.load(sys.stdin
 TARBALL=$(printf '%s' "$REL" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("tarball_url",""))' 2>/dev/null)
 [ -n "$TAG" ] || { echo "[update] 仓库无 release，跳过"; exit 0; }
 
-# 归一化比较（v 前缀可有可无）
+# 归一化比较（v 前缀可有可无）——只在远程版本更新时才升级，本地超前（开发中/未发布）绝不降级
 if [ "${TAG#v}" = "${LOCAL_V#v}" ]; then
   echo "[update] 已是最新 ($LOCAL_V)"
+  exit 0
+fi
+HIGHER=$(printf '%s\n%s\n' "${TAG#v}" "${LOCAL_V#v}" | sort -V | tail -1)
+if [ "$HIGHER" = "${LOCAL_V#v}" ]; then
+  log "[update] 本地 ($LOCAL_V) 新于最新 Release ($TAG)，跳过（不降级）"
   exit 0
 fi
 if [ "${1:-}" = "--check" ]; then
