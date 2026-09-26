@@ -4,7 +4,7 @@
 import AppKit
 import UserNotifications
 
-// ---- 14 天历史采样：logs/history.tsv，每行 "unix feeds articles" ----
+// ---- 7 天趋势历史采样：logs/history.tsv，每行 "unix feeds articles" ----
 struct Sample { let t: Date; let feeds: Double; let articles: Double; let hc: Double? }
 
 enum History {
@@ -12,7 +12,7 @@ enum History {
 
     static func load() -> [Sample] {
         guard let s = try? String(contentsOfFile: file, encoding: .utf8) else { return [] }
-        let cutoff = Date().addingTimeInterval(-15 * 86400)   // 14 天柱状图 + 1 天缓冲
+        let cutoff = Date().addingTimeInterval(-15 * 86400)   // 7 天柱状图 + 窗口前基线 + 缓冲
         return s.split(separator: "\n").compactMap { line in
             let p = line.split(separator: "\t")
             guard p.count >= 3, let t = TimeInterval(p[0]), let f = Double(p[1]), let a = Double(p[2]) else { return nil }
@@ -36,7 +36,7 @@ enum History {
     }
 }
 
-// ---- 14 天趋势图（纯 AppKit 自绘；三列：左饼图（公众号进度 csv_added/pending/notfound）+ 右上公众号曲线 + 右下文章曲线）----
+// ---- 7 天趋势图（纯 AppKit 自绘；三列：左饼图（公众号进度 csv_added/pending/notfound）+ 右上公众号曲线 + 右下文章曲线）----
 final class TrendView: NSView {
     var samples: [Sample] = [] { didSet { needsDisplay = true } }
     var articlesSub = "" { didSet { needsDisplay = true } }   // 如 "正文 790"
@@ -54,20 +54,19 @@ final class TrendView: NSView {
     private func drawBars(_ rect: NSRect, name: String, color: NSColor, samples: [Sample], value: (Sample) -> Double, sub: String?, axisBottom: Bool, liveValue: Double = -1) {
         // rect 结构：[头行 13][曲线区][底 12]
         var daily = dailyBars(samples, value: value)            // 168 项（7×24）
+        let currentIdx = 6 * 24 + Calendar.current.component(.hour, from: Date())
 
         // 用 status.sh 实时值覆盖今天当前小时（索引 6*24+currentHour）
-        if liveValue >= 0 {
-            let cal = Calendar.current
-            let currentHour = cal.component(.hour, from: Date())
-            let idx = 6 * 24 + currentHour
-            if idx < daily.count {
-                let prevHourVal: Double = idx > 0 ? daily[idx - 1].lastValue : 0
-                let hourDelta = max(0, liveValue - prevHourVal)
-                daily[idx] = (day: daily[idx].day, lastValue: liveValue, delta: hourDelta)
-            }
+        if liveValue >= 0, currentIdx < daily.count {
+            let prevHourVal: Double = currentIdx > 0 ? daily[currentIdx - 1].lastValue : 0
+            // prevHourVal=0 = 还没有任何基线（如刚装菜单栏、history.tsv 还没采样）：只立基线不计增量，避免全量值画成一根巨柱
+            let hourDelta = prevHourVal > 0 ? max(0, liveValue - prevHourVal) : 0
+            daily[currentIdx] = (day: daily[currentIdx].day, lastValue: liveValue, delta: hourDelta)
         }
 
-        let lastValue = daily.last?.lastValue ?? 0
+        // 头行当前值 = 今天当前小时桶的 lastValue（实时覆盖后即最新累计值）
+        // 不能读 daily.last——那是今天 23 点的桶，未来小时 lastValue 恒为 0，会整天显示 0
+        let lastValue = daily[min(currentIdx, daily.count - 1)].lastValue
 
         // 头行：色点 名称 [副信息] …… 当前值
         color.setFill()
@@ -110,6 +109,7 @@ final class TrendView: NSView {
             .font: NSFont.systemFont(ofSize: 8, weight: .bold),
             .foregroundColor: NSColor.labelColor,
         ]
+        let dayTotalHaloAttrs = dayTotalAttrs.merging([.foregroundColor: NSColor.windowBackgroundColor]) { _, new in new }
         for d in 0..<7 {
             let dayTotal: Double = (0..<24).reduce(0.0) { $0 + max(0, daily[d*24 + $1].delta) }
             guard dayTotal > 0 else { continue }
@@ -119,7 +119,13 @@ final class TrendView: NSView {
             let txt = "\(Int(dayTotal))" as NSString
             let size = txt.size(withAttributes: dayTotalAttrs)
             let lx = min(max(chart.minX, x - size.width / 2), chart.maxX - size.width)
-            txt.draw(at: NSPoint(x: lx, y: baseY + max(1.0, maxH) + 1), withAttributes: dayTotalAttrs)
+            // y 封顶在柱状区内：柱子太高时数字不许顶进头行（色点/名称/当前总数）
+            let ly = min(baseY + max(1.0, maxH) + 1, chart.maxY - size.height - 2)
+            // 封顶后数字可能压在柱子上：四周描一圈窗口底色光晕保证可读（在菜单底色上则不可见）
+            for (dx, dy) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
+                txt.draw(at: NSPoint(x: lx + dx, y: ly + dy), withAttributes: dayTotalHaloAttrs)
+            }
+            txt.draw(at: NSPoint(x: lx, y: ly), withAttributes: dayTotalAttrs)
         }
 
         // 组间分隔线：每天末尾只画底部 6px 短刻度（避免看起来像柱子）；颜色更淡
@@ -154,17 +160,21 @@ final class TrendView: NSView {
     }
 
     // 按小时分桶：最近 7 天 × 24 小时 = 168 项（day 0..6，day 6 = 今天）；每项代表那一个小时
-    // delta = max(0, lastValue - 前一小时 lastValue)；第一项 delta=0（基线）
+    // delta = max(0, lastValue - 前一小时 lastValue)；基线取窗口(7天)前最后一个采样（load 保留 15 天）
+    // 没有基线时（如刚装机）窗口内首个采样只作起点 delta=0——否则全量累计值会被当成一小时的增量画出巨柱
     // 缺失小时 delta=0（lastVal 沿用 prevVal）；未来小时 lastVal=0 delta=0
     private func dailyBars(_ samples: [Sample], value: (Sample) -> Double) -> [(day: Date, lastValue: Double, delta: Double)] {
         let cal = Calendar.current
         let now = Date()
         let today = cal.startOfDay(for: now)
         let currentHour = cal.component(.hour, from: now)  // 0..23
+        let windowStart = cal.date(byAdding: .day, value: -6, to: today)!   // day 0 的 0 点
 
-        // byHour[hour] = 该小时最后一个采样值（只统计 7 天内的）
+        // byHour[hour] = 该小时最后一个采样值（只统计 7 天内的）；seed = 窗口前最后一个采样（delta 基线）
         var byHour: [Date: Double] = [:]
+        var seed: Double?
         for s in samples {
+            if s.t < windowStart { seed = value(s); continue }   // samples 已按时间升序，最后一个窗口前采样胜出
             let day = cal.startOfDay(for: s.t)
             let dayDiff = cal.dateComponents([.day], from: day, to: today).day ?? 99
             guard dayDiff >= 0 && dayDiff < 7 else { continue }
@@ -175,7 +185,7 @@ final class TrendView: NSView {
         }
 
         var result: [(Date, Double, Double)] = []
-        var prevVal = 0.0
+        var prevVal = seed   // nil = 尚无任何基线
         for d in 0..<7 {
             let day = cal.date(byAdding: .day, value: -(6 - d), to: today)!
             for h in 0..<24 {
@@ -188,14 +198,15 @@ final class TrendView: NSView {
                     delta = 0
                 } else if let v = byHour[hour] {
                     lastVal = v
-                    delta = (d == 0 && h == 0) ? 0 : max(0, v - prevVal)
+                    delta = prevVal.map { max(0, v - $0) } ?? 0   // 无基线时首个采样只作起点，不计增量
+                    prevVal = v
                 } else {
                     // 该小时没采样：lastVal 沿用 prevVal（保持连续），delta = 0
-                    lastVal = prevVal
+                    // 注意缺失/未来桶不得改写 prevVal——否则"尚无基线"的 nil 会被固化成 0，后续首个采样又变全量巨柱
+                    lastVal = prevVal ?? 0
                     delta = 0
                 }
                 result.append((hour, lastVal, delta))
-                prevVal = lastVal
             }
         }
         return result.map { (day: $0.0, lastValue: $0.1, delta: $0.2) }
@@ -210,7 +221,7 @@ final class TrendView: NSView {
         let trendW = inner.maxX - trendX
         // 左列：饼图 + 图例 + 总数（垂直排列）
         drawPieChart(in: NSRect(x: inner.minX, y: inner.minY, width: pieW, height: inner.height))
-        // 右两行：公众号 + 文章 14 天柱状图（与饼图同高度）
+        // 右两行：公众号 + 文章 7 天柱状图（与饼图同高度）
         let rowH = (inner.height - 16) / 2
         drawBars(NSRect(x: trendX, y: inner.minY + rowH + 16, width: trendW, height: rowH),
                  name: "公众号", color: .controlAccentColor, samples: samples, value: { $0.feeds }, sub: nil, axisBottom: false, liveValue: liveFeeds)
@@ -299,51 +310,25 @@ final class TrendView: NSView {
     }
 }
 
-// 状态行：左侧文字 [+ 右侧刷新图标按钮]。三行状态统一用本视图渲染，保证字体/颜色/边距完全一致
+// 状态行：单行文字。三行状态统一用本视图渲染，保证字体/颜色/边距完全一致
 final class StatusRowView: NSView {
-    var onRefresh: (() -> Void)?
     private let label: NSTextField
-    private let button: NSButton?
 
-    init(text: String, showRefresh: Bool = false) {
+    init(text: String) {
         label = NSTextField(labelWithString: text)
         label.font = NSFont.systemFont(ofSize: 10)
         label.textColor = .secondaryLabelColor
         label.lineBreakMode = .byClipping
-        button = Self.makeRefreshButton(showRefresh)
         super.init(frame: NSRect(x: 0, y: 0, width: 340, height: 18))
         addSubview(label)
-        if let button = button {
-            addSubview(button)
-            button.target = self
-            button.action = #selector(clickRefresh)
-        }
     }
 
-    init(attributedText: NSAttributedString, showRefresh: Bool = false) {
+    init(attributedText: NSAttributedString) {
         label = NSTextField(labelWithAttributedString: attributedText)
         label.font = NSFont.systemFont(ofSize: 10)
         label.lineBreakMode = .byClipping
-        button = Self.makeRefreshButton(showRefresh)
         super.init(frame: NSRect(x: 0, y: 0, width: 340, height: 18))
         addSubview(label)
-        if let button = button {
-            addSubview(button)
-            button.target = self
-            button.action = #selector(clickRefresh)
-        }
-    }
-
-    private static func makeRefreshButton(_ show: Bool) -> NSButton? {
-        guard show else { return nil }
-        let icon = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "刷新")?
-            .withSymbolConfiguration(.init(pointSize: 11, weight: .medium)) ?? NSImage()
-        let btn = NSButton(image: icon, target: nil, action: nil)
-        btn.isBordered = false
-        btn.imagePosition = .imageOnly
-        btn.contentTintColor = .secondaryLabelColor
-        btn.toolTip = "刷新状态"
-        return btn
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -352,16 +337,6 @@ final class StatusRowView: NSView {
         super.layout()
         label.sizeToFit()
         label.frame.origin = NSPoint(x: 14, y: (frame.height - label.frame.height) / 2)
-        button?.frame.size = NSSize(width: 18, height: 16)
-        button?.frame.origin = NSPoint(x: frame.width - 14 - 18, y: (frame.height - 16) / 2)
-    }
-
-    @objc private func clickRefresh() {
-        button?.contentTintColor = .controlAccentColor
-        onRefresh?()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
-            self?.button?.contentTintColor = .secondaryLabelColor
-        }
     }
 }
 
@@ -562,17 +537,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.removeAllItems()
         // 三行状态统一用 StatusRowView 渲染（字体/颜色/边距完全一致）；行1 右侧带刷新按钮
         let d = st.dict
-        func addStatusRow(_ text: String, refresh: Bool = false) {
-            let row = StatusRowView(text: text, showRefresh: refresh)
-            if refresh { row.onRefresh = { [weak self] in self?.refreshNow() } }
+        func addStatusRow(_ text: String) {
+            let row = StatusRowView(text: text)
             row.frame = NSRect(x: 0, y: 0, width: 340, height: 18)
             let item = NSMenuItem()
             item.view = row
             menu.addItem(item)
         }
-        func addStatusRow(_ attributedText: NSAttributedString, refresh: Bool = false) {
-            let row = StatusRowView(attributedText: attributedText, showRefresh: refresh)
-            if refresh { row.onRefresh = { [weak self] in self?.refreshNow() } }
+        func addStatusRow(_ attributedText: NSAttributedString) {
+            let row = StatusRowView(attributedText: attributedText)
             row.frame = NSRect(x: 0, y: 0, width: 340, height: 18)
             let item = NSMenuItem()
             item.view = row
@@ -586,7 +559,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 addStatusRow(makeLogAttributedString(entry))
             }
         }
-        addStatusRow("Docker \(d["docker"] ?? "?") · 容器 \(d["container"] ?? "?") · 应用 \(d["app"] ?? "?") · ego \(d["ego"] ?? "?")", refresh: true)
+        addStatusRow("Docker \(d["docker"] ?? "?") · 容器 \(d["container"] ?? "?") · 应用 \(d["app"] ?? "?") · ego \(d["ego"] ?? "?")")
         // 公众号进度：已采(csv_added) + 待采(csv_pending) + 未找到(csv_notfound) = 公司总数
         // 用 CSV 台账口径，不用 feeds/slice，因为 feeds/slice 都漏算 csv_notfound
         let a = Int(d["csv_added"] ?? "-1") ?? -1
@@ -594,8 +567,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let n = Int(d["csv_notfound"] ?? "-1") ?? -1
         // 公众号进度（饼图 + 公众号trend + 文章trend）合并到一个 TrendView 里做三列布局
         addStatusRow("runner \(d["runner"] ?? "?") · 磁盘 \(d["disk_gb"] ?? "?")G · 备份 \(d["backup_days"] ?? "?")天前")
-        // 微信读书授权 + 限流
-        addStatusRow("微信读书授权 \(d["weread"] == "OK" ? "正常" : (d["weread"] == "FAIL" ? "失效待扫码" : (d["weread"] ?? "?"))) · 限流 \(d["throttled"] == "yes" ? "冷却中" : "无")")
+        // 微信读书授权 + 上次扫码时间 + 限流
+        let wereadState = d["weread"] ?? "?"
+        var wereadText: String
+        switch wereadState {
+        case "OK":
+            // OK 时拼上"上次扫码 X 前"；没记录过时间戳则只显示 OK
+            if let tsStr = d["weread_ok_at"], let ts = TimeInterval(tsStr), ts > 0 {
+                let ageSec = Date().timeIntervalSince1970 - ts
+                wereadText = "微信读书 OK · 上次扫码 \(formatAge(ageSec))前"
+            } else {
+                wereadText = "微信读书 OK"
+            }
+        case "FAIL":
+            wereadText = "微信读书 失效待扫码"
+        case "LOGINERR":
+            wereadText = "微信读书 登录失败"
+        default:
+            wereadText = "微信读书 \(wereadState)"
+        }
+        let throttled = d["throttled"] == "yes" ? "冷却中" : "无"
+        addStatusRow("\(wereadText) · 限流 \(throttled)")
 
         // 7 天趋势（三列布局：左饼图 + 右上公众号曲线 + 右下文章曲线）
         let trendItem = NSMenuItem()
@@ -640,8 +632,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
     }
 
-    @objc func refreshNow() { statusItem.button?.title = "werss …"; refresh() }
-
     // 读 batch/log_<N>.txt 里 mtime 最新那份的最后 3 行，解析成 (LogEntry 类型, 显示文本) 列表
     // 返回最新 3 条（最新在最前）；workerN 从文件名提取（log_1.txt → 1）
     private enum LogKind { case added, notFound, paused }
@@ -665,6 +655,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let stem = (logFile as NSString).lastPathComponent  // "log_1.txt"
         let workerNum = stem.replacingOccurrences(of: "log_", with: "").replacingOccurrences(of: ".txt", with: "")
         return recent.map { parseProcessLog($0, workerNum: workerNum) }
+    }
+
+    // 把"距今多少秒"格式化成 "Ns/N分/Nh/Nd"（<60s→秒；<1h→分；<1d→时；≥1d→天）
+    private func formatAge(_ seconds: TimeInterval) -> String {
+        let s = max(0, Int(seconds))
+        if s < 60 { return "\(s)s" }
+        let m = s / 60
+        if m < 60 { return "\(m)分" }
+        let h = m / 60
+        if h < 24 { return "\(h)时" }
+        let d = h / 24
+        return "\(d)天"
     }
 
     // 解析一行原始日志 → (类型, "HH:MM workerN 暂停 Xs" / "已添加 name" / "未找到")

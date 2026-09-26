@@ -89,6 +89,17 @@ if app_alive; then
   fi
 fi
 
+# 跟踪扫码时刻：仅在授权真正失效(FAIL/LOGINERR)后恢复(OK)时写入，即"刚扫码"；
+# UNKNOWN→OK（应用/容器重启但授权本来就有效）不算扫码，不刷新时间
+WR_STATE_FILE="$LOGS/.weread_state"
+WR_OK_AT_FILE="$LOGS/.weread_ok_at"
+PREV_WR=$(cat "$WR_STATE_FILE" 2>/dev/null || echo "UNKNOWN")
+if [ "$WR" = "OK" ] && { [ "$PREV_WR" = "FAIL" ] || [ "$PREV_WR" = "LOGINERR" ]; }; then
+  date +%s > "$WR_OK_AT_FILE"   # 仅失效→恢复（=扫码）时记录
+fi
+echo "$WR" > "$WR_STATE_FILE"
+WR_OK_AT=$(cat "$WR_OK_AT_FILE" 2>/dev/null || echo "-1")
+
 if [ "$MODE" = "--parse" ]; then
   cat <<EOF
 docker=$D
@@ -103,6 +114,7 @@ feeds=$FEEDS
 articles=$ARTICLES
 has_content=$HAS_CONTENT
 weread=$WR
+weread_ok_at=$WR_OK_AT
 ego=$E
 disk_gb=$DISK_GB
 backup_days=$BK_DAYS
